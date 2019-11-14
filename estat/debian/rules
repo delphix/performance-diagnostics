@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+#
+# Copyright 2019 Delphix. All rights reserved.
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+
+%:
+	dh $@
+
+# The package is all scripts so there are no source to build
+override_dh_auto_build:
+
+override_dh_auto_install:
+	dh_install cmd/* /usr/bin
+	dh_install lib/* /usr/share/performance-diagnostics/lib
+	dh_install bpf/* /usr/share/performance-diagnostics/bpf
