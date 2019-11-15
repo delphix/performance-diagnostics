@@ -1,0 +1,61 @@
+{
+   "title": "NFS Layer",
+   "keys": {
+      "op" : {
+         "name": "op",
+         "declaration": "char op[OP_NAME_LEN];",
+         "collect": "__builtin_memcpy(&key.op, opstr, OP_NAME_LEN);",
+         "keytype" : "DEFAULT_KEY_TYPE"
+      },
+      "sync" : {
+         "name": "sync",
+         "declaration": "int sync;",
+         "collect": "key.sync = data->sync;",
+         "keytype" : "DEFAULT_KEY_TYPE"
+      },
+      "cached" : {
+         "name": "cached",
+         "declaration": "int cached;",
+         "collect": "key.cached = data->cached;",
+         "keytype" : "DEFAULT_KEY_TYPE"
+      }
+   },
+   "maps": {
+      "count" : {
+         "name" : "count",
+         "collect" : "",
+         "aggregation" : "count.increment(key)",
+         "type" : "u64",
+         "aggtype" : "COUNT_AGGREGATION"
+      },
+      "avgLatency" : {
+         "name" : "avgLatency",
+         "collect" : "",
+         "aggregation" : "avgLatency.increment(key, delta)",
+         "type" : "u64",
+         "aggtype" : "AVERSUM_AGGREGATION"
+      },
+      "throughput" : {
+         "name" : "throughput",
+         "collect" : "",
+         "aggregation" : "throughput.increment(key, data->size)",
+         "type" : "u64",
+         "aggtype" : "SUM_AGGREGATION"
+      }
+   },
+   "hists": {
+      "latency" : {
+         "name" : "latency",
+         "collect" : "",
+         "slot" : "log_lin_hist_slot(delta)",
+         "aggtype" : "LL_HISTOGRAM_AGGREGATION"
+      },
+      "size" : {
+         "name" : "size",
+         "collect" : "",
+         "slot" : "bpf_log2l(data->size)",
+         "aggtype" : "LOG_HISTOGRAM_AGGREGATION"
+      }
+   },
+   "collection_period_in_ns" : "1000000000"
+}
