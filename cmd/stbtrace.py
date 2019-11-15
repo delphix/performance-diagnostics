@@ -15,7 +15,7 @@ base_dir = os.path.dirname(__file__) + "/../"
 if not os.path.exists(base_dir + "lib/iterative_template.py"):
     base_dir = "/usr/share/performance-diagnostics/"
 sys.path.append(base_dir + 'lib/')
-from iterative_template import IterativeTemplate
+from iterative_template import IterativeTemplate    # noqa: E402
 
 parser = argparse.ArgumentParser(
         description='stbtrace (String Template Bcc trace) '
@@ -65,7 +65,7 @@ else:
     filename = '../bpf/stbtrace/' + args.tracer + '.json'
 try:
     with open(filename, 'r') as json_file:
-         data = json.load(json_file)
+        data = json.load(json_file)
 except IOError as e:
     print ("Error reading " + filename + ": " + e.strerror)
     exit()
@@ -73,14 +73,11 @@ except ValueError as e:
     print ("Error reading " + filename + ": invalid format")
     exit()
 
-
-
-
 if args.fields:
     print (args.tracer + " fields")
     print ("axes:")
-    for axis in data['axes'].keys():
-        print ("   " + axis)
+    for key in data['keys'].keys():
+        print ("   " + key)
     print ("statistics:")
     for map in data['maps'].keys():
         print ("   " + map)
@@ -105,8 +102,8 @@ except IOError as e:
 
 template = IterativeTemplate(file_content)
 
-for axis in data['axes']:
-    template.addFields('axes', data['axes'][axis])
+for axis in data['keys']:
+    template.addFields('keys', data['keys'][axis])
 
 for map in data['maps']:
     template.addFields('maps', data['maps'][map])
@@ -115,7 +112,7 @@ for hist in data['hists']:
     template.addFields('hists', data['hists'][hist])
 
 if args.AXIS:
-    template.selectFields('axes', args.AXIS.split(","))
+    template.selectFields('keys', args.AXIS.split(","))
 
 if args.STATS:
     template.selectFields('maps', args.STATS.split(","))
@@ -125,7 +122,7 @@ if args.collection_ns:
     template.addSingleton('collection_period_in_ns', args.collection_ns)
 else:
     for node in data:
-        if node != 'axes' and \
+        if node != 'keys' and \
            node != 'maps' and \
            node != 'hists' and \
            node != 'title':

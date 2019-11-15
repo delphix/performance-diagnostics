@@ -131,9 +131,8 @@ KVER = os.popen('uname -r').read().rstrip()
 b = BPF(text=bpf_text, cflags=["-include",
                                "/usr/src/zfs-" + KVER + "/zfs_config.h",
                                "-I/usr/src/zfs-" + KVER + "/include/",
-                               "-I/usr/src/zfs-" + KVER + "/include/os/linux/spl",
-                               "-I/usr/src/zfs-" + KVER + "/include/os/linux/kernel",
-                               "-I/usr/src/zfs-" + KVER + "/include/os/linux/zfs"])
+                               "-I/usr/src/zfs-" + KVER + "/include/spl/",
+                               "-I/usr/src/zfs-" + KVER + "/include/linux"])
 
 b.attach_kretprobe(event="vdev_queue_io_to_issue", fn_name="vdev_queue_issue_return")
 b.attach_kprobe(event="vdev_queue_io_done", fn_name="vdev_queue_done")

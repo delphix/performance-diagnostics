@@ -50,7 +50,7 @@ typedef struct {
 // Key structure for scalar aggegations maps
 typedef struct {
     u64  t;
-    $axes:{axis| $axis.declaration$
+    $keys:{key| $key.declaration$
     }$
     u64  cpuid;
 } io_key_t;
@@ -85,7 +85,7 @@ static int aggregate_data(io_data_t *data, u64 ts, char *opstr)
     delta = ts - data->ts;
     key.t = ts / $collection_period_in_ns$;
     key.cpuid = bpf_get_smp_processor_id();
-    $axes:{axis| $axis.collect$
+    $keys:{key| $key.collect$
     }$
 
     $maps:{map|
@@ -140,7 +140,7 @@ helper.add_aggregation("$map.name$", BCCHelper.$map.aggtype$)
 $hists:{hist|
 helper.add_aggregation("$hist.name$", BCCHelper.$hist.aggtype$)
 }$
-$axes:{key|
+$keys:{key|
 helper.add_key_type("$key.name$", BCCHelper.$key.keytype$)
 }$
 

@@ -49,7 +49,7 @@ class IterativeTemplate:
     # helper.add_am.group(2)("$hist.name$", BCCHelper.$hist.aggtype$)
     # }
     #
-    TOP_ITERATIVE_REGEX = '\$(\w+)\:(\{\w+\|[^}]*})\$'
+    TOP_ITERATIVE_REGEX = r"\$(\w+)\:(\{\w+\|[^}]*})\$"
 
     #
     # The org.stringtemplate.v4 used int he scripts requires dollars
@@ -57,7 +57,7 @@ class IterativeTemplate:
     # dollar sign is removed to work with python string templates
     # using DOUBLE_DOLLAR_REGEX.
     #
-    DOUBLE_DOLLAR_REGEX = '\$\w+?(\$)'
+    DOUBLE_DOLLAR_REGEX = r"\$\w+?(\$)"
 
     def __init__(self, templateString):
         """ Initialize by saving the string to perform substitutions on
@@ -130,7 +130,7 @@ class IterativeTemplate:
         # -------
         # helper.add_am.group(2)("$hist.name$", BCCHelper.$hist.aggtype$)
         #
-        VAR_ITERATIVE_REGEX = '{(\w+)\|([^}]*)}'
+        VAR_ITERATIVE_REGEX = r"{(\w+)\|([^}]*)}"
 
         def __init__(self):
             self.fields = list()

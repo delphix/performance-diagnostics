@@ -1,6 +1,6 @@
 {
    "title": "IO Layer",
-   "axes": {
+   "keys": {
       "op" : {
          "name": "op",
          "declaration": "char op[OP_NAME_LEN];",

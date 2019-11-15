@@ -4,10 +4,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 
-from bcc import BPF
-from time import sleep
 from time import time
-import ctypes as ct
 import logging
 import re
 
@@ -238,8 +235,7 @@ class BCCHelper:
 
         return (ktime + self.epoch_time_delta)
 
-    @staticmethod
-    def log_lin_hist_value(slot):
+    def log_lin_hist_value(self, slot):
         """
         The C code log_lin_hist_slot(<latency value>), returns a "slot value"
         that indicates the histogram bucket for the given <latency value>.
@@ -301,7 +297,7 @@ class BCCHelper:
                 return "{" + str(pow(2, slot) - 1) + "," + \
                       str(value) + "}"
             else:
-                return "{" + str(BCCHelper.log_lin_hist_value(slot)) + \
+                return "{" + str(self.log_lin_hist_value(slot)) + \
                          "," + str(value) + "}"
         else:
             rangestr = "["
@@ -314,15 +310,15 @@ class BCCHelper:
                 rangestr += BCCHelper.log_hist_value_str(slot) + ")"
             else:
                 #
-	        # latency histograms are captured in nanosecs
+                # latency histograms are captured in nanosecs
                 # using log_lin_hist_slot(), so convert to microseconds
                 #
                 if (slot > 0):
-                    rangestr += str(BCCHelper.log_lin_hist_value(slot - 1)/1000)
+                    rangestr += str(self.log_lin_hist_value(slot - 1)/1000)
                 else:
                     rangestr += "0"
                 rangestr += ", "
-                rangestr += str(BCCHelper.log_lin_hist_value(slot)/1000) + ")"
+                rangestr += str(self.log_lin_hist_value(slot)/1000) + ")"
             return "\n" + self.ESTAT_HIST_FORMAT.format(
                 rangestr, str(value),
                 BCCHelper.get_ampersand_string(value, total))
@@ -397,7 +393,7 @@ class BCCHelper:
 
         # Extract IPv4 literal address, often preceded by "*," or ","
         if key_type[1] == self.IP_KEY_TYPE:
-            match = re.search("\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", keystr)
+            match = re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", keystr)
             #
             # Update key if IP match was found, if there is no match return
             # the raw key back unchanged
@@ -511,7 +507,7 @@ class BCCHelper:
         if self.isHistogram(agg):
             com_val = self.output_histogram(items, agg[1])
         else:
-            if len(items) is 0:
+            if len(items) == 0:
                 com_val = 0
             elif agg[1] == self.AVERAGE_AGGREGATION:
                 com_val = self.combined_average(items)
