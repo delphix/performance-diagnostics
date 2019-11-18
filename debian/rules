@@ -8,10 +8,16 @@
 %:
 	dh $@
 
-# The package is all scripts so there are no source to build
+#
+# The package is all scripts so there are no source to build. However, we do
+# need to rename a couple files, so do that here.
+#
 override_dh_auto_build:
+	mkdir -p build/cmd/
+	cp cmd/estat.py build/cmd/estat
+	cp cmd/stbtrace.py build/cmd/stbtrace
 
 override_dh_auto_install:
-	dh_install cmd/* /usr/bin
+	dh_install build/cmd/* /usr/bin
 	dh_install lib/* /usr/share/performance-diagnostics/lib
 	dh_install bpf/* /usr/share/performance-diagnostics/bpf
