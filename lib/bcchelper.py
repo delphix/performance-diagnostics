@@ -109,8 +109,8 @@ class BCCHelper:
     IP_KEY_TYPE = 1
     # Format string for print histograms
     ESTAT_HIST_FORMAT = '{:<16} {:>16} {:<41}'
-    ESTAT_HEADER_FORMAT = '   {:<20}{:>47}'
-    ESTAT_SCALAR_FORMAT = '{:>12}'
+    ESTAT_HEADER_FORMAT = '   {:<20}{:>49}'
+    ESTAT_SCALAR_FORMAT = '{:>17}'
     ESTAT_TITLE_FORMAT = '{:<30}'
     HISTOGRAM_AMPERSAND_WIDTH = 40
 
@@ -313,12 +313,16 @@ class BCCHelper:
                 rangestr += ", "
                 rangestr += BCCHelper.log_hist_value_str(slot) + ")"
             else:
+                #
+	        # latency histograms are captured in nanosecs
+                # using log_lin_hist_slot(), so convert to microseconds
+                #
                 if (slot > 0):
-                    rangestr += str(BCCHelper.log_lin_hist_value(slot - 1))
+                    rangestr += str(BCCHelper.log_lin_hist_value(slot - 1)/1000)
                 else:
                     rangestr += "0"
                 rangestr += ", "
-                rangestr += str(BCCHelper.log_lin_hist_value(slot)) + ")"
+                rangestr += str(BCCHelper.log_lin_hist_value(slot)/1000) + ")"
             return "\n" + self.ESTAT_HIST_FORMAT.format(
                 rangestr, str(value),
                 BCCHelper.get_ampersand_string(value, total))

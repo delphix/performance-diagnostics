@@ -2,7 +2,7 @@
 
 `estat` - extensible performance observability tool for Delphix Dynamic Data Platform.  
 
-This tool mainly uses `eBPF` programs with `BCC` front-end to collect and output performance statistics from kernel via `kprobes`.  
+This tool mainly uses `eBPF` programs with a `BCC` front-end to collect and output performance statistics from the kernel via `kprobes`.  
 It is made up of the following components:
 
 - `cmd/estat`
@@ -16,7 +16,7 @@ It is made up of the following components:
 
 ## Installation
 
-`estat` is provided as an archive package of its components.
+`estat` is already installed on the Delphix Dynamic Data Platform.
 
 ## Usage
 
