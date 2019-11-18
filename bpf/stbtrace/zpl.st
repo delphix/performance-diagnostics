@@ -173,7 +173,7 @@ int zfs_write_done(struct pt_regs *ctx)
 """
 KVER = os.popen('uname -r').read().rstrip()
 b = BPF(text=bpf_text,
-        cflags=["-I/usr/src/zfs-" + KVER + "/include/os/linux/spl"])
+        cflags=["-I/usr/src/zfs-" + KVER + "/include/spl"])
 
 b.attach_kprobe(event="zfs_read", fn_name="zfs_read_start")
 b.attach_kprobe(event="zfs_write", fn_name="zfs_write_start")

@@ -25,20 +25,19 @@ from bcc import BPF
 import getopt
 from glob import glob
 import os
-import subprocess
 import sys
-from time import sleep, time, strftime
+from time import sleep, strftime
 
 #
-# Find BCCHelper. If we are being run from the repo, we should be able to find
-# it in the repo's lib/ directory. If we can't find that, look for BCCHelper
-# in its install location.
+# We need to find BCCHelper.  If being run from the repo, we should find
+# it in the repo's lib/ directory.  If we can't find that directory, look
+# for BCCHelper in its install location.
 #
 base_dir = os.path.dirname(__file__) + "/../"
 if not os.path.exists(base_dir + "lib/bcchelper.py"):
     base_dir = "/usr/share/performance-diagnostics/"
 sys.path.append(base_dir + 'lib/')
-from bcchelper import BCCHelper
+from bcchelper import BCCHelper   # noqa: E402
 
 
 def die(*args, **kwargs):
@@ -46,12 +45,15 @@ def die(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
     exit(1)
 
+
 programs_dir = base_dir + 'bpf/estat/'
-programs = [os.path.splitext(os.path.basename(s))[0] for s in glob(programs_dir + '*.c')]
+programs = [os.path.splitext(os.path.basename(s))[0]
+            for s in glob(programs_dir + '*.c')]
 programs.sort()
 
 standalones_dir = base_dir + 'bpf/standalone/'
-standalones = [os.path.splitext(os.path.basename(s))[0] for s in glob(standalones_dir + '*.py')]
+standalones = [os.path.splitext(os.path.basename(s))[0]
+               for s in glob(standalones_dir + '*.py')]
 standalones.sort()
 
 #
@@ -99,10 +101,12 @@ help_msg += """
       -a pool   the pool to trace
 """
 
+
 def usage(msg):
     print("{}: {}\n".format(sys.argv[0], msg), file=sys.stderr)
     print(help_msg, file=sys.stderr)
     exit(1)
+
 
 if len(sys.argv) < 2:
     die("Too few arguments")
@@ -127,14 +131,17 @@ if program not in all_progs:
 if program in standalones:
     os.execl(standalones_dir + program + '.py', program, *sys.argv[2:])
 
-monitor=False
-accum=False
-script_arg=None
-debug_level=0
-dump_bpf=False
+monitor = False
+accum = False
+script_arg = None
+debug_level = 0
+dump_bpf = False
+
 
 class Args:
     pass
+
+
 args = Args()
 setattr(args, "lat_hist", False)
 setattr(args, "size_hist", False)
@@ -409,7 +416,7 @@ for line in input_text.splitlines():
             probes.add("p_" + probe_spec[1] + "_bcc_" + str(os.getpid()))
         elif probe_type == "kretprobe":
             b.attach_kretprobe(event=probe_spec[1], fn_name=probe_spec[2],
-                    maxactive=MAXACTIVE)
+                               maxactive=MAXACTIVE)
             probes.add("r_" + probe_spec[1] + "_bcc_" + str(os.getpid()))
         else:
             die("Unknown probe type: expected 'kprobe' or similar, got '" +
@@ -424,7 +431,8 @@ if args.lat_hist or args.size_hist or args.summary:
         helper1.add_aggregation("ops", BCCHelper.COUNT_AGGREGATION, "iops(/s)")
         helper1.add_aggregation("lata", BCCHelper.AVERSUM_AGGREGATION,
                                 "avg latency(us)")
-        helper1.add_aggregation("lats", BCCHelper.STDDEV_AGGREGATION, "stddev(us)")
+        helper1.add_aggregation("lats", BCCHelper.STDDEV_AGGREGATION,
+                                "stddev(us)")
         helper1.add_aggregation("data", BCCHelper.SUM_AGGREGATION,
                                 "throughput(k/s)")
 
@@ -447,7 +455,8 @@ if args.latsize_hist:
 if args.summary and args.total:
     helper3 = BCCHelper(b, BCCHelper.ESTAT_PRINT_MODE)
     helper3.add_aggregation("opst", BCCHelper.COUNT_AGGREGATION, "iops(/s)")
-    helper3.add_aggregation("datat", BCCHelper.SUM_AGGREGATION, "throughput(k/s)")
+    helper3.add_aggregation("datat", BCCHelper.SUM_AGGREGATION,
+                            "throughput(k/s)")
     helper3.add_key_type("name")
 
 # Need real time;
@@ -490,8 +499,8 @@ else:
     try:
         ds__delta = long(os.popen("date +%s%N").readlines()[0]) - ds__start
         if args.summary and args.normalize:
-                helper1.normalize("ops", ds__delta / 1000000000)
-                helper3.normalize("opst", ds__delta / 1000000000)
+            helper1.normalize("ops", ds__delta / 1000000000)
+            helper3.normalize("opst", ds__delta / 1000000000)
         if args.latsize_hist:
             helper2.printall()
         if args.lat_hist or args.size_hist or args.summary:
@@ -512,6 +521,6 @@ try:
             [probe, hits, misses] = line.strip().split()
             if probe in probes and int(misses) > 0:
                 print("WARNING: probe {} missed {} of {} events"
-                        .format(probe, misses, hits))
+                      .format(probe, misses, hits))
 except IOError as e:
     die(e)
