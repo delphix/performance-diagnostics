@@ -6,11 +6,9 @@
 
 from bcc import BPF
 from time import sleep
-from time import time
-import datetime
-import ctypes as ct
 import os
 import sys
+
 #
 # Find BCCHelper. If we are being run from the repo, we should be able to find
 # it in the repo's lib/ directory. If we can't find that, look for BCCHelper
@@ -20,7 +18,7 @@ base_dir = os.path.dirname(__file__) + "/../"
 if not os.path.exists(base_dir + "lib/bcchelper.py"):
     base_dir = "/usr/share/performance-diagnostics/"
 sys.path.append(base_dir + 'lib/')
-from bcchelper import BCCHelper
+from bcchelper import BCCHelper   # noqa: E402
 
 # BPF txg program
 bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
@@ -125,7 +123,7 @@ int vdev_queue_done(struct pt_regs *ctx, zio_t *zio)
 }
 
 
-"""
+"""  # noqa: W293
 
 KVER = os.popen('uname -r').read().rstrip()
 b = BPF(text=bpf_text, cflags=["-include",
@@ -134,7 +132,8 @@ b = BPF(text=bpf_text, cflags=["-include",
                                "-I/usr/src/zfs-" + KVER + "/include/spl/",
                                "-I/usr/src/zfs-" + KVER + "/include/linux"])
 
-b.attach_kretprobe(event="vdev_queue_io_to_issue", fn_name="vdev_queue_issue_return")
+b.attach_kretprobe(event="vdev_queue_io_to_issue",
+                   fn_name="vdev_queue_issue_return")
 b.attach_kprobe(event="vdev_queue_io_done", fn_name="vdev_queue_done")
 
 helper = BCCHelper(b, BCCHelper.ANALYTICS_PRINT_MODE)

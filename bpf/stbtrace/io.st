@@ -6,11 +6,9 @@
 
 from bcc import BPF
 from time import sleep
-from time import time
-import datetime
-import ctypes as ct
 import os
 import sys
+
 #
 # Find BCCHelper. If we are being run from the repo, we should be able to find
 # it in the repo's lib/ directory. If we can't find that, look for BCCHelper
@@ -20,7 +18,7 @@ base_dir = os.path.dirname(__file__) + "/../"
 if not os.path.exists(base_dir + "lib/bcchelper.py"):
     base_dir = "/usr/share/performance-diagnostics/"
 sys.path.append(base_dir + 'lib/')
-from bcchelper import BCCHelper
+from bcchelper import BCCHelper   # noqa: E402
 
 
 # BPF disk io program
@@ -124,7 +122,7 @@ int disk_io_done(struct pt_regs *ctx, struct request *reqp)
     io_base_data.delete((u64 *) &reqp);
     return 0;
 }
-"""
+"""  # noqa: W293
 b = BPF(text=bpf_text)
 
 if BPF.get_kprobe_functions(b'blk_start_request'):

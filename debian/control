@@ -13,6 +13,6 @@ Standards-Version: 4.1.2
 
 Package: performance-diagnostics
 Architecture: any
-Depends: python-bcc, python3-bcc, python-minimal
+Depends: python3-bcc, python-minimal
 Description: eBPF-based Performance Diagnostic Tools
   A collection of eBPF-based tools for diagnosing performance issues.

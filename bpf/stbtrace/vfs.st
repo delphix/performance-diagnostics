@@ -6,11 +6,9 @@
 
 from bcc import BPF
 from time import sleep
-from time import time
-import datetime
-import ctypes as ct
 import os
 import sys
+
 #
 # Find BCCHelper. If we are being run from the repo, we should be able to find
 # it in the repo's lib/ directory. If we can't find that, look for BCCHelper
@@ -20,7 +18,7 @@ base_dir = os.path.dirname(__file__) + "/../"
 if not os.path.exists(base_dir + "lib/bcchelper.py"):
     base_dir = "/usr/share/performance-diagnostics/"
 sys.path.append(base_dir + 'lib/')
-from bcchelper import BCCHelper
+from bcchelper import BCCHelper   # noqa: E402
 
 # BPF txg program
 bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
@@ -68,7 +66,7 @@ BPF_HASH($hist.name$, vfs_hist_key_t, u64);
 
 // Probe functions to initialize thread local data
 int vfs_start(struct pt_regs *ctx, void *file, void *user_buf,
-			       u64 count, void *ppos)
+    u64 count, void *ppos)
 {
     u32 pid = bpf_get_current_pid_tgid();
     vfs_data_t data = {};
@@ -187,7 +185,7 @@ int vfs_write_done(struct pt_regs *ctx)
     u64 ts = bpf_ktime_get_ns();
     return vfs_aggregate_data(ts, WRITE_STR);
 }
-"""
+"""  # noqa: W293
 b = BPF(text=bpf_text)
 
 b.attach_kprobe(event="vfs_read", fn_name="vfs_start")
