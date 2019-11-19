@@ -7,6 +7,7 @@
 from time import time
 import logging
 import re
+import signal
 
 """ BCC Helper
 This module contains the BCCHelper class to aid in writing BCC Tracing
@@ -124,6 +125,15 @@ class BCCHelper:
         logging.basicConfig(level=logging.CRITICAL,
                             format='%(asctime)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger()
+
+        #
+        # Try to run atexit handlers if we are killed by a signal. BCC
+        # registers handlers to detach kprobes, and if these aren't run the
+        # probes are leaked.
+        #
+        def _handler(signum, frame):
+            exit(1)
+        signal.signal(signal.SIGTERM, _handler)
 
     @staticmethod
     def isHistogram(agg):
