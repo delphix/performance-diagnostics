@@ -229,7 +229,7 @@ class BCCHelper:
         """Apply normalization if specified."""
         for n in self.normalize_aggregations:
             if n[0] == name:
-                value = value / n[1]
+                value = value // n[1]
         return value
 
     def add_key_type(self, name, type=None):
@@ -265,7 +265,7 @@ class BCCHelper:
         """
         mag_values = [10000, 100000, 1000000, 10000000, 100000000,
                       1000000000, 10000000000]
-        idx = slot / 10
+        idx = slot // 10
         if idx >= len(mag_values):
             self.logger.debug("log_lin_hist_value slot: %d out of range", slot)
             return -1
@@ -296,7 +296,7 @@ class BCCHelper:
     def get_ampersand_string(value, total):
         retstr = "|"
         for i in range(((value-1) *
-                       BCCHelper.HISTOGRAM_AMPERSAND_WIDTH / total) + 1):
+                       BCCHelper.HISTOGRAM_AMPERSAND_WIDTH // total) + 1):
             retstr += "@"
         return retstr
 
@@ -324,11 +324,11 @@ class BCCHelper:
                 # using log_lin_hist_slot(), so convert to microseconds
                 #
                 if (slot > 0):
-                    rangestr += str(self.log_lin_hist_value(slot - 1)/1000)
+                    rangestr += str(self.log_lin_hist_value(slot - 1)//1000)
                 else:
                     rangestr += "0"
                 rangestr += ", "
-                rangestr += str(self.log_lin_hist_value(slot)/1000) + ")"
+                rangestr += str(self.log_lin_hist_value(slot)//1000) + ")"
             return "\n" + self.ESTAT_HIST_FORMAT.format(
                 rangestr, str(value),
                 BCCHelper.get_ampersand_string(value, total))
@@ -348,7 +348,7 @@ class BCCHelper:
 
         h = ""
 
-        total = 0L
+        total = 0
         if self.mode != self.ANALYTICS_PRINT_MODE:
             h += '\n'
             h += self.ESTAT_HIST_FORMAT.format(
@@ -359,13 +359,13 @@ class BCCHelper:
 
         hist_items.sort(key=lambda x: x[0].slot)
         slot = -1
-        value = 0L
+        value = 0
         for k, v in hist_items:
             if slot != k.slot and slot != -1:
                 h += self.histogram_entry(hist_type, slot, value, total)
                 if self.mode == self.ANALYTICS_PRINT_MODE:
                     h += ","
-                value = 0L
+                value = 0
             slot = k.slot
             value += v.value
         h += self.histogram_entry(hist_type, slot, value, total)
@@ -399,7 +399,11 @@ class BCCHelper:
           DEFAULT_KEY_TYPE - no post-processing needed
           IP_KEY_TYPE - strips unwanted symbols from IPV4 literal address
         """
-        keystr = str(getattr(key, key_type[0]))
+        attr = getattr(key, key_type[0])
+        if type(attr) is bytes:
+            keystr = attr.decode('utf-8', errors='backslashreplace')
+        else:
+            keystr = str(attr)
 
         # Extract IPv4 literal address, often preceded by "*," or ","
         if key_type[1] == self.IP_KEY_TYPE:
@@ -422,7 +426,7 @@ class BCCHelper:
             count += item[1].count
 
         if count:
-            return sum / count
+            return sum // count
         else:
             return 0
 
@@ -525,12 +529,12 @@ class BCCHelper:
                 com_val = self.combined_scalar_value(items)
                 if agg[1] == self.AVERSUM_AGGREGATION:
                     if count_val:
-                        com_val = com_val / count_val
+                        com_val = com_val // count_val
                     else:
                         com_val = 0
                 elif agg[1] == self.STDDEV_AGGREGATION:
                     if count_val and aversum_val:
-                        com_val = com_val / count_val - (
+                        com_val = com_val // count_val - (
                             aversum_val * aversum_val)
                     else:
                         com_val = 0
@@ -645,5 +649,4 @@ class BCCHelper:
         """ Print and clear all data from aggregations in the helper."""
         agg_items = self.get_ordered_items(clear)
         outstr = self.items_to_string(agg_items)
-        # The trailing comma prevents the print from adding a newline.
-        print outstr,
+        print(outstr, end='', flush=True)
