@@ -48,8 +48,8 @@ parser.add_argument('-s', '--stats', action='store', dest='STATS',
                     help='A comma separated list of statistics to'
                          'collect')
 parser.add_argument('-c', '--coll', type=int, action='store',
-                    dest='collection_ns',
-                    help='The collection interval specified in ns')
+                    dest='collection_sec',
+                    help='The collection interval in seconds')
 parser.add_argument('-b', '--bcc', action='store_true', dest='bcc',
                     help='Emit the bcc script without executing it')
 parser.add_argument('-p', '--path', action='store', dest='PATH',
@@ -62,7 +62,7 @@ args = parser.parse_args()
 if args.PATH:
     filename = args.PATH + '/' + args.tracer + '.json'
 else:
-    filename = '../bpf/stbtrace/' + args.tracer + '.json'
+    filename = base_dir + '/bpf/stbtrace/' + args.tracer + '.json'
 try:
     with open(filename, 'r') as json_file:
         data = json.load(json_file)
@@ -91,7 +91,7 @@ if args.fields:
 if args.PATH:
     filename = args.PATH + '/' + args.tracer + '.st'
 else:
-    filename = '../bpf/stbtrace/' + args.tracer + '.st'
+    filename = base_dir + '/bpf/stbtrace/' + args.tracer + '.st'
 
 try:
     with open(filename, 'r') as f:
@@ -118,8 +118,9 @@ if args.STATS:
     template.selectFields('maps', args.STATS.split(","))
     template.selectFields('hists', args.STATS.split(","))
 
-if args.collection_ns:
-    template.addSingleton('collection_period_in_ns', args.collection_ns)
+if args.collection_sec:
+    template.addSingleton('collection_period_in_ns',
+                          args.collection_sec * 1000000000)
 else:
     for node in data:
         if node != 'keys' and \
