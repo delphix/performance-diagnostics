@@ -128,6 +128,8 @@ int disk_io_done(struct pt_regs *ctx, struct request *reqp)
 """
 b = BPF(text=bpf_text)
 
+if BPF.get_kprobe_functions(b'blk_start_request'):
+    b.attach_kprobe(event="blk_start_request", fn_name="disk_io_start")
 b.attach_kprobe(event="blk_mq_start_request", fn_name="disk_io_start")
 b.attach_kprobe(event="blk_account_io_completion", fn_name="disk_io_done")
 
