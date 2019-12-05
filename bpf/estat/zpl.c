@@ -57,7 +57,7 @@ zfs_read_write_entry(io_info_t *info, struct inode *ip, uio_t *uio, int flags)
 	info->start_time = bpf_ktime_get_ns();
 	info->bytes = uio->uio_resid;
 	info->is_sync =
-	    z_os->os_sync == ZFS_SYNC_ALWAYS || (flags & (FSYNC | FDSYNC));
+	    z_os->os_sync == ZFS_SYNC_ALWAYS || (flags & (O_SYNC | O_DSYNC));
 
 	u32 tid = bpf_get_current_pid_tgid();
 	io_info_t *infop = io_info_map.lookup(&tid);
