@@ -412,11 +412,12 @@ for line in input_text.splitlines():
                 line + "'")
         probe_type = probe_spec[0]
         if probe_type == "kprobe":
-	    if BPF.get_kprobe_functions(probe_spec[1]):
+            if BPF.get_kprobe_functions(probe_spec[1]):
                 b.attach_kprobe(event=probe_spec[1], fn_name=probe_spec[2])
                 probes.add("p_" + probe_spec[1] + "_bcc_" + str(os.getpid()))
             else:
-                print("WARNING: {}: {} - not found".format(probe_type, probe_spec[1]))
+                print("WARNING: {}: {} - not found"
+                      .format(probe_type, probe_spec[1]))
         elif probe_type == "kretprobe":
             b.attach_kretprobe(event=probe_spec[1], fn_name=probe_spec[2],
                                maxactive=MAXACTIVE)
