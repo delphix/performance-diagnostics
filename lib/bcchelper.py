@@ -571,6 +571,9 @@ class BCCHelper:
             stripped_key = ""
             try:
                 stripped_key = keystr[keystr.index(',')+1:len(keystr)-1]
+                stripped_key = stripped_key.strip()
+                if stripped_key[-1:] == ",":
+                    stripped_key = stripped_key[:-1]
             except ValueError:
                 pass
 
