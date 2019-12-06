@@ -393,6 +393,8 @@ if dump_bpf:
 KVER = os.popen('uname -r').read().rstrip()
 cflags = ["-include",
           "/usr/src/zfs-" + KVER + "/zfs_config.h",
+          "-include",
+          "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
           "-I/usr/src/zfs-" + KVER + "/include/",
           "-I/usr/src/zfs-" + KVER + "/include/spl"]
 if script_arg:
