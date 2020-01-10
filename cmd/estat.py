@@ -202,7 +202,10 @@ for opt, arg in opts:
         else:
             assert False, "unhandled option: " + opt
 
-if len(rem_args) != 1:
+if len(rem_args) == 0:
+    die("Missing duration argument")
+
+if len(rem_args) > 1:
     die("Too many arguments")
 
 try:
