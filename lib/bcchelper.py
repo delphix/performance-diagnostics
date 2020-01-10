@@ -1,5 +1,5 @@
 #
-# Copyright 2018, 2019 Delphix. All rights reserved.
+# Copyright 2018, 2020 Delphix. All rights reserved.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
@@ -16,7 +16,7 @@ Guide.
 https://github.com/iovisor/bcc/blob/master/docs/reference_guide.md#1-bpf
 
 Defitions for C helper routines and macros are in
-/opt/delphix/server/etc/bcc_helper.h
+lib/bcc_helper.h
 
 BCC Helper focuses are printing out data from a set of tracing aggregations.
 There are three supported scalar types of aggregations(count, sum, and

@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2019 by Delphix. All rights reserved.
+# Copyright (c) 2019, 2020 by Delphix. All rights reserved.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
@@ -22,14 +22,13 @@ from bcchelper import BCCHelper   # noqa: E402
 
 
 # BPF disk io program
-bpf_text = """
+bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
+bpf_text += """
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <linux/blkdev.h>
 #include <linux/blk_types.h>
 #include <uapi/linux/bpf.h>
-#include "/opt/delphix/server/etc/bcc_helper.h"
-
 
 // Definitions for this script
 #define READ_STR "read"
