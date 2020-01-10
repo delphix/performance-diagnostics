@@ -22,6 +22,7 @@
 
 from bcc import BPF
 from time import sleep, strftime
+import argparse
 import sys
 import os
 repo_lib_dir = os.path.dirname(__file__) + "/../../lib/"
@@ -46,8 +47,19 @@ bpf_text = """
 #include <sys/zil_impl.h>
 """
 
-if len(sys.argv) > 1:
-    bpf_text += '#define POOL "' + sys.argv[1] + '"'
+parser = argparse.ArgumentParser(
+        description='Collect zil latency statistics.',
+        usage='estat zil [options]')
+parser.add_argument('-c', '--coll', type=int, action='store',
+                    dest='collection_sec',
+                    help='The collection interval in seconds')
+parser.add_argument('-p', '--pool', type=str, action='store',
+                    dest='pool',
+                    help='The pool to monitor (default: domain0)')
+args = parser.parse_args()
+
+if (args.pool):
+    bpf_text += '#define POOL "' + str(args.pool) + '"'
 else:
     bpf_text += '#define POOL "domain0"'
 
@@ -276,7 +288,22 @@ alloc_helper.add_aggregation("average_allocs",
                              BCCHelper.AVERAGE_AGGREGATION, "avg")
 alloc_helper.add_key_type("name")
 
-print(" Tracing enabled... Hit Ctrl-C to end.")
+if (not args.collection_sec):
+    print(" Tracing enabled... Hit Ctrl-C to end.")
+
+# Collect data for a collection interval if specified
+if (args.collection_sec):
+    sleep(args.collection_sec)
+    try:
+        print("%-16s\n" % strftime("%D - %H:%M:%S %Z"))
+        latency_helper.printall()
+        alloc_helper.printall()
+        exit(0)
+    except Exception as e:
+        print(str(e))
+        exit(0)
+
+# Collect data until keyborad interrupt with output for each second
 while (1):
     try:
         sleep(60)
