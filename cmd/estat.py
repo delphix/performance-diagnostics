@@ -93,12 +93,11 @@ help_msg += """
       -d LEVEL  set BCC debug level
       -e        emit the resulting eBPF script without executing it
 
-  estat zil [options]
+  estat zil [POOL]
       Provides a breakdown of time spent doing ZIL-related activities, in
       particular the time spent allocating a block and time spent waiting for
-      the write I/O to complete.
-
-      -a pool   the pool to trace
+      the write I/O to complete. If POOL is not specified, defaults to tracing
+      the pool 'domain0'.
 """
 
 
