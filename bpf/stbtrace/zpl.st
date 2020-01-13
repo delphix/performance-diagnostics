@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2019 by Delphix. All rights reserved.
+# Copyright (c) 2019, 2020 by Delphix. All rights reserved.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
@@ -23,11 +23,11 @@ sys.path.append(base_dir + 'lib/')
 from bcchelper import BCCHelper
 
 # BPF txg program
-bpf_text = """
+bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
+bpf_text += """
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <uapi/linux/bpf.h>
-#include "/opt/delphix/server/etc/bcc_helper.h"
 
 #include <sys/uio.h>
 
