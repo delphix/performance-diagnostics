@@ -25,16 +25,15 @@ from time import sleep, strftime
 import argparse
 import sys
 import os
-repo_lib_dir = os.path.dirname(__file__) + "/../../lib/"
-if os.path.exists(repo_lib_dir + "bcchelper.py"):
-    sys.path.append(repo_lib_dir)
-else:
-    sys.path.append("/usr/share/performance-diagnostics/lib/")
-from bcchelper import BCCHelper  # noqa 
+base_dir = os.path.dirname(__file__) + "/../../"
+if not os.path.exists(base_dir + "lib/bcchelper.py"):
+    base_dir = "/usr/share/performance-diagnostics/"
+sys.path.append(base_dir + 'lib/')
+from bcchelper import BCCHelper   # noqa: E402
 
 # define BPF program
-bpf_text = """
-#include "/opt/delphix/server/etc/bcc_helper.h"
+bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
+bpf_text += """
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <uapi/linux/bpf.h>
@@ -132,7 +131,7 @@ uio_t *uio, int ioflag)
                 return 0;
 
     info.alloc_count = 0;
-    info.sync = ioflag & (FSYNC | FDSYNC) ||
+    info.sync = ioflag & (O_SYNC | O_DSYNC) ||
             zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS;
     zil_info_map.update(&tid, &info);
     return 0;
