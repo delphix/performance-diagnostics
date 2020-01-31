@@ -26,6 +26,14 @@ typedef struct { \
 	u64		slot; \
 } hist_key_type;
 
+#define HIST_KEY_INITIALIZE(hist_key_type, hist_key, agg_key, slot) \
+        hist_key_type hist_key = {agg_key, slot};
+#define HIST_KEY_GET_AGGKEY(hist_key_ptr) (&(hist_key_ptr)->agg_key)
+#define HIST_KEY_GET_SLOT(hist_key_ptr) ((hist_key_ptr)->slot)
+#define HIST_KEY_SET_SLOT(hist_key_ptr, nslot) (hist_key_ptr)->slot = nslot;
+#define HIST_KEY_SET_AGGKEY(hist_key_ptr, agg_key) (hist_key_ptr)->agg_key = agg_key;
+
+
 /*
  * This function returns the slot, or histogram bucket, for a value based
  * on log linear distribution equivalent to dtrace llquantize(*, 10, 4, 10, 10).
