@@ -130,7 +130,8 @@ b = BPF(text=bpf_text, cflags=["-include",
                                "/usr/src/zfs-" + KVER + "/zfs_config.h",
                                "-I/usr/src/zfs-" + KVER + "/include/",
                                "-I/usr/src/zfs-" + KVER + "/include/spl/",
-                               "-I/usr/src/zfs-" + KVER + "/include/linux"])
+                               "-I/usr/src/zfs-" + KVER + "/include/linux",
+                               "-DCC_USING_FENTRY"])
 
 b.attach_kretprobe(event="vdev_queue_io_to_issue",
                    fn_name="vdev_queue_issue_return")
