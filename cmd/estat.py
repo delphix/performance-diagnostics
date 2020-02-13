@@ -86,7 +86,6 @@ help_msg += """
       -z/-Z     enable/disable size histograms (default: off)
       -q/-Q     enable/disable latency histograms by size (default: off)
       -y/-Y     enable/disable the summary output (default: on)
-      -n/-N     enable/disable normalizing summary by time (default: on)
       -t/-T     enable/disable emitting the summary total (default: on)
       -d LEVEL  set BCC debug level
       -e        emit the resulting eBPF script without executing it
@@ -144,7 +143,6 @@ setattr(args, "lat_hist", False)
 setattr(args, "size_hist", False)
 setattr(args, "latsize_hist", False)
 setattr(args, "summary", True)
-setattr(args, "normalize", True)
 setattr(args, "total", True)
 
 #
@@ -182,7 +180,6 @@ for opt, arg in opts:
                     '-z': "size_hist",
                     '-q': "latsize_hist",
                     '-y': "summary",
-                    '-n': "normalize",
                     '-t': "total"}
         if opt in switches:
             setattr(args, switches[opt], True)
@@ -484,9 +481,10 @@ if monitor:
             ds__delta = ds__end - ds__start
             if not accum:
                 ds__start = ds__end
-            if args.summary and args.normalize:
-                helper1.normalize("ops", ds__delta // 1000000000)
-                helper3.normalize("opst", ds__delta // 1000000000)
+            helper1.normalize("ops", ds__delta // 1000000000)
+            helper1.normalize("data", ds__delta // 1000000000)
+            helper3.normalize("opst", ds__delta // 1000000000)
+            helper3.normalize("datat", ds__delta // 1000000000)
             clear_data = not accum
             if args.latsize_hist:
                 helper2.printall(clear_data)
@@ -505,9 +503,10 @@ else:
         pass
     try:
         ds__delta = int(os.popen("date +%s%N").readlines()[0]) - ds__start
-        if args.summary and args.normalize:
-            helper1.normalize("ops", ds__delta // 1000000000)
-            helper3.normalize("opst", ds__delta // 1000000000)
+        helper1.normalize("ops", ds__delta // 1000000000)
+        helper1.normalize("data", ds__delta // 1000000000)
+        helper3.normalize("opst", ds__delta // 1000000000)
+        helper3.normalize("datat", ds__delta // 1000000000)
         if args.latsize_hist:
             helper2.printall()
         if args.lat_hist or args.size_hist or args.summary:
