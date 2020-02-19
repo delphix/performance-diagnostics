@@ -63,21 +63,23 @@ help_msg = "USAGE: {} -h\n".format(sys.argv[0])
 help_msg += "       {} [prog] [options]\n".format(sys.argv[0])
 help_msg += """
   Tool for running eBPF programs for monitoring performance of various I/O
-  related subsystems, focusing on I/O latency. Output can be displayed has
+  related subsystems, focusing on I/O latency. Output can be displayed with
   histograms of I/O broken down by size and type, depending on the provided
   arguments.
 
 OPTIONS:
 
      -h    show this help message and exit
+
+  The subcommands listed in the following section share common options.
+  Each executes the specified tracing program for <duration> seconds,
+  displaying various histograms detailing the I/O latency as seen by the
+  particular subsystem.
 """
 for program in programs:
     help_msg += "\n  estat {:<13} [options] <duration>".format(program)
 
 help_msg += """
-      Executes the specified tracing program for <duration> seconds, displaying
-      various histograms detailing the I/O latency as seen by the particular
-      subsystem.
 
       -m        monitor mode; emit data periodically
       -M        monitor mode; emit accumulated data periodically
@@ -90,11 +92,21 @@ help_msg += """
       -d LEVEL  set BCC debug level
       -e        emit the resulting eBPF script without executing it
 
+  The subcommands listed in the following section are stand alone tracers.
+  Each has it's own options as detailed below.
+
+  estat txg [options]
+      Collect spa_sync statistics for each txg.
+      -h          show txg help message and exit
+      -c INTERVAL set the collection interval in seconds
+      -p POOL     set the pool to monitor (default: domain0)
+
   estat zil [POOL]
       Provides a breakdown of time spent doing ZIL-related activities, in
       particular the time spent allocating a block and time spent waiting for
       the write I/O to complete. If POOL is not specified, defaults to tracing
       the pool 'domain0'.
+
 """
 
 
