@@ -69,7 +69,7 @@ int disk_io_start(struct pt_regs *ctx, struct request *reqp)
     data.ts = bpf_ktime_get_ns();
     data.cmd_flags = reqp->cmd_flags;
     data.size = reqp->__data_len;
-    __builtin_memcpy(&data.device, diskp->disk_name, DISK_NAME_LEN);
+    bpf_probe_read_str(&data.device, DISK_NAME_LEN, diskp->disk_name);
     io_base_data.update((u64 *) &reqp, &data);
     return 0;
 }

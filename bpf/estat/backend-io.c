@@ -15,9 +15,8 @@
 #define	READ_STR "read "
 #define	WRITE_STR "write "
 #define	OP_NAME_LEN 7
-#define	DEV_NAME_LEN 8
 #define	NAME_LENGTH (OP_NAME_LEN + 1)
-#define	AXIS_LENGTH (DEV_NAME_LEN + 1)
+#define	AXIS_LENGTH (DISK_NAME_LEN + 1)
 
 // Structure to hold thread local data
 typedef struct {
@@ -25,7 +24,7 @@ typedef struct {
 	unsigned int size;
 	unsigned int cmd_flags;
 	u32 err;
-	char device[DEV_NAME_LEN];
+	char device[DISK_NAME_LEN];
 } io_data_t;
 
 BPF_HASH(io_base_data, u64, io_data_t);
@@ -40,7 +39,7 @@ disk_io_start(struct pt_regs *ctx, struct request *reqp)
 	data.ts = bpf_ktime_get_ns();
 	data.cmd_flags = reqp->cmd_flags;
 	data.size = reqp->__data_len;
-	__builtin_memcpy(&data.device, diskp->disk_name, DEV_NAME_LEN);
+	bpf_probe_read_str(&data.device, DISK_NAME_LEN, diskp->disk_name);
 	io_base_data.update((u64 *) &reqp, &data);
 	return (0);
 }
