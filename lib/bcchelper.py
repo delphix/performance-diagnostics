@@ -5,9 +5,11 @@
 #
 
 from time import time
+from enum import Enum
 import logging
 import re
 import signal
+import subprocess
 
 """ BCC Helper
 This module contains the BCCHelper class to aid in writing BCC Tracing
@@ -105,6 +107,8 @@ class BCCHelper:
     #
     DEFAULT_KEY_TYPE = 0
     IP_KEY_TYPE = 1
+    CUSTOM_KEY_TYPE = 2
+    MAP_INDEX_TYPE = 3
     # Format string for print histograms
     ESTAT_HIST_FORMAT = '{:<16} {:>16} {:<41}'
     ESTAT_HEADER_FORMAT = '   {:<20}{:>49}'
@@ -232,11 +236,11 @@ class BCCHelper:
                 value = value // n[1]
         return value
 
-    def add_key_type(self, name, type=None):
+    def add_key_type(self, name, type=None, display_function=None):
         """This key type expected in all aggregation keys."""
         if type is None:
             type = self.DEFAULT_KEY_TYPE
-        self.key_types.append([name, type])
+        self.key_types.append([name, type, display_function])
 
     def walltime(self, ktime):
         """Convert to an epoch timestamp."""
@@ -414,6 +418,10 @@ class BCCHelper:
             #
             if match:
                 keystr = str(match.group())
+        elif key_type[1] == self.CUSTOM_KEY_TYPE:
+            keystr = key_type[2](keystr)
+        elif key_type[1] == self.MAP_INDEX_TYPE:
+            keystr = key_type[2].displayName(int(keystr))
 
         return keystr
 
@@ -640,8 +648,9 @@ class BCCHelper:
             base_key = self.next_key(agg_items)
 
         if self.mode == self.ESTAT_PRINT_MODE:
-            outstr += estat_scalar_header + "\n"
-            outstr += estat_scalar_table + "\n\n"
+            if estat_scalar_table != "":
+                outstr += estat_scalar_header + "\n"
+                outstr += estat_scalar_table + "\n\n"
 
         return outstr
 
@@ -650,3 +659,90 @@ class BCCHelper:
         agg_items = self.get_ordered_items(clear)
         outstr = self.items_to_string(agg_items)
         print(outstr, end='', flush=True)
+
+
+class BCCMapIndex(Enum):
+    """Provides index constants for bcc map keys"""
+    def __init__(self, index, csymbol, display):
+        self.index = index
+        self.csymbol = csymbol
+        self.display = display
+
+    def index(self):
+        """The int value for this index."""
+        return self.index
+
+    def display(self):
+        """The display string for this index"""
+        return self.display
+
+    def definition(self):
+        """The CPP definition for this index"""
+        return "-D" + self.csymbol + "=" + str(self.index) + ""
+
+    @classmethod
+    def list(cls):
+        """List all indices in a subclass"""
+        return list(map(lambda c: c.value, cls))
+
+    @classmethod
+    def displayName(cls, i):
+        """The display name for a subclass index"""
+        return list(map(lambda c: c.value, cls))[i][2]
+
+    @classmethod
+    def getCDefinitions(cls):
+        """Definitions for bcc C code"""
+        defs = []
+        for index in cls:
+            defs.append(index.definition())
+        return defs
+
+
+class BCCPerCPUIntArray:
+    """Provide output support for a PerCPU Array indexed by a BCCMapIndex"""
+    def __init__(self, b, name, mapindex):
+        self.table = b[name]
+        self.name = name
+        self.mapindex = mapindex
+
+    def printall(self, clear=True):
+        """ Print and clear all data from aggregations in the helper."""
+        items = self.table.items()
+        if (clear):
+            self.table.clear()
+
+        for item in items:
+            key = item[0]
+            value = item[1]
+            sum = 0
+            # sum the values for each cpu
+            for v in value:
+                sum += v
+            if sum > 0:
+                print('{:20}'.format(self.mapindex.displayName(key.value)) +
+                      ' : ' + str(sum))
+
+
+class BCCPoolCompare:
+    """Provide code to test for a zfs pool instance"""
+    def __init__(self, pool_name):
+        """leverage sdb to get a pointer for a pool name"""
+        self.pool_name = pool_name
+        pool_match = re.search(r'0x\w+', subprocess.getoutput(
+                               "sudo sdb -e \'spa " + self.pool_name + "\'"))
+        if pool_match:
+            self.pool_pointer = pool_match.group(0)
+        else:
+            self.pool_pointer = None
+
+    def get_pool_pointer(self):
+        """Return the kernel address for the spa_t object"""
+        return self.pool_pointer
+
+    def get_pool_compare_code(self):
+        """Generate C POOL_COMPARE macro"""
+        if not self.pool_pointer:
+            return "#define POOL_COMPARE(spa) 1"
+        return str("#define POOL_COMPARE(spa) ((ulong)spa == " +
+                   self.pool_pointer + ")")
