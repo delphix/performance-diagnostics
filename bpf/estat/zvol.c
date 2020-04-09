@@ -11,8 +11,8 @@
 #include <sys/zil_impl.h>
 #include <sys/zfs_rlock.h>
 #include <sys/spa_impl.h>
-#include <sys/zvol_impl.h>
-
+#include <sys/zvol.h>
+#include <sys/dataset_kstats.h>
 
 #define	ZVOL_WCE 0x8
 #define	ZVOL_READ 1
@@ -28,6 +28,31 @@
 #define	POOL (OPTARG)
 #endif
 
+/*
+ * Copied and duplicated from "module/zfs/zvol.c" of the ZFS repository.
+ */
+typedef struct zvol_state {
+	char			zv_name[MAXNAMELEN];	/* name */
+	uint64_t		zv_volsize;		/* advertised space */
+	uint64_t		zv_volblocksize;	/* volume block size */
+	objset_t		*zv_objset;	/* objset handle */
+	uint32_t		zv_flags;	/* ZVOL_* flags */
+	uint32_t		zv_open_count;	/* open counts */
+	uint32_t		zv_changed;	/* disk changed */
+	zilog_t			*zv_zilog;	/* ZIL handle */
+	rangelock_t		zv_rangelock;	/* for range locking */
+	dnode_t			*zv_dn;		/* dnode hold */
+	dev_t			zv_dev;		/* device id */
+	struct gendisk		*zv_disk;	/* generic disk */
+	struct request_queue	*zv_queue;	/* request queue */
+	dataset_kstats_t	zv_kstat;	/* zvol kstats */
+	list_node_t		zv_next;	/* next zvol_state_t linkage */
+	uint64_t		zv_hash;	/* name hash */
+	struct hlist_node	zv_hlink;	/* hash link */
+	kmutex_t		zv_state_lock;	/* protects zvol_state_t */
+	atomic_t		zv_suspend_ref;	/* refcount for suspend */
+	krwlock_t		zv_suspend_lock;	/* suspend lock */
+} zvol_state_t;
 
 // Structure to hold thread local data
 typedef struct {
