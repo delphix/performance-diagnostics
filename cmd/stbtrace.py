@@ -133,8 +133,12 @@ else:
 script = template.render()
 if args.bcc:
     print (script)
+    exit(0)
 else:
     try:
         exec(script)
-    except BaseException as e:
+    except KeyboardInterrupt:
+        exit(0)
+    except Exception as e:
         print (e)
+        exit(1)
