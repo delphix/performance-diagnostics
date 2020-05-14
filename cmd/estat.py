@@ -394,7 +394,8 @@ KVER = os.popen('uname -r').read().rstrip()
 cflags = ["-include",
           "/usr/src/zfs-" + KVER + "/zfs_config.h",
           "-I/usr/src/zfs-" + KVER + "/include/",
-          "-I/usr/src/zfs-" + KVER + "/include/spl"]
+          "-I/usr/src/zfs-" + KVER + "/include/spl",
+          "-DCC_USING_FENTRY"]
 if script_arg:
     cflags.append("-DOPTARG=\"" + script_arg + "\"")
 

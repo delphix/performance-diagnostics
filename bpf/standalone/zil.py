@@ -260,7 +260,8 @@ b = BPF(text=bpf_text,
                 "-I/usr/src/zfs-" + KVER + "/include/",
                 "-I/usr/src/zfs-" + KVER + "/include/spl",
                 "-I/usr/src/zfs-" + KVER + "/include/",
-                "-I/usr/src/zfs-" + KVER + "/include/linux"])
+                "-I/usr/src/zfs-" + KVER + "/include/linux",
+                "-DCC_USING_FENTRY"])
 
 b.attach_kprobe(event="zfs_write", fn_name="zfs_write_entry")
 b.attach_kretprobe(event="zfs_write", fn_name="zfs_write_return")
