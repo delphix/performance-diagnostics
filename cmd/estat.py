@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #
 # Copyright 2019 Delphix. All rights reserved.
 #
@@ -18,8 +18,6 @@
 #   qualifier called "axis" (like "async" / "sync") as needed by
 #   the performance data collector.
 #
-
-from __future__ import print_function
 
 from bcc import BPF
 import getopt
@@ -423,7 +421,7 @@ for line in input_text.splitlines():
                 line + "'")
         probe_type = probe_spec[0]
         if probe_type == "kprobe":
-            if BPF.get_kprobe_functions(probe_spec[1]):
+            if BPF.get_kprobe_functions(probe_spec[1].encode('utf-8')):
                 b.attach_kprobe(event=probe_spec[1], fn_name=probe_spec[2])
                 probes.add("p_" + probe_spec[1] + "_bcc_" + str(os.getpid()))
             else:
@@ -481,20 +479,20 @@ print(" Tracing enabled... Hit Ctrl-C to end.")
 # output
 if monitor:
     # TODO can we do this without shelling out to 'date'?
-    ds__start = long(os.popen("date +%s%N").readlines()[0])
+    ds__start = int(os.popen("date +%s%N").readlines()[0])
     while (1):
         try:
             sleep(duration)
         except KeyboardInterrupt:
             break
         try:
-            ds__end = long(os.popen("date +%s%N").readlines()[0])
+            ds__end = int(os.popen("date +%s%N").readlines()[0])
             ds__delta = ds__end - ds__start
             if not accum:
                 ds__start = ds__end
             if args.summary and args.normalize:
-                helper1.normalize("ops", ds__delta / 1000000000)
-                helper3.normalize("opst", ds__delta / 1000000000)
+                helper1.normalize("ops", ds__delta // 1000000000)
+                helper3.normalize("opst", ds__delta // 1000000000)
             clear_data = not accum
             if args.latsize_hist:
                 helper2.printall(clear_data)
@@ -503,26 +501,26 @@ if monitor:
             if args.summary and args.total:
                 helper3.printall(clear_data)
             print("%-16s\n" % strftime("%D - %H:%M:%S %Z"))
-        except e:
+        except Exception as e:
             die(e)
 else:
-    ds__start = long(os.popen("date +%s%N").readlines()[0])
+    ds__start = int(os.popen("date +%s%N").readlines()[0])
     try:
         sleep(duration)
     except KeyboardInterrupt:
         pass
     try:
-        ds__delta = long(os.popen("date +%s%N").readlines()[0]) - ds__start
+        ds__delta = int(os.popen("date +%s%N").readlines()[0]) - ds__start
         if args.summary and args.normalize:
-            helper1.normalize("ops", ds__delta / 1000000000)
-            helper3.normalize("opst", ds__delta / 1000000000)
+            helper1.normalize("ops", ds__delta // 1000000000)
+            helper3.normalize("opst", ds__delta // 1000000000)
         if args.latsize_hist:
             helper2.printall()
         if args.lat_hist or args.size_hist or args.summary:
             helper1.printall()
         if args.summary and args.total:
             helper3.printall()
-    except e:
+    except Exception as e:
         die(e)
 
 #
