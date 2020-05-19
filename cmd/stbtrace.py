@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #
 # Copyright 2019 Delphix. All rights reserved.
 #
@@ -45,7 +45,7 @@ parser.add_argument('-a', '--axes', action='store', dest='AXIS',
                     help='A comma separated list specifying collection '
                          'axis or "None"')
 parser.add_argument('-s', '--stats', action='store', dest='STATS',
-                    help='A comma separated list of statistics to'
+                    help='A comma separated list of statistics to '
                          'collect')
 parser.add_argument('-c', '--coll', type=int, action='store',
                     dest='collection_sec',
@@ -67,22 +67,22 @@ try:
     with open(filename, 'r') as json_file:
         data = json.load(json_file)
 except IOError as e:
-    print ("Error reading " + filename + ": " + e.strerror)
+    print("Error reading " + filename + ": " + e.strerror)
     exit()
-except ValueError as e:
-    print ("Error reading " + filename + ": invalid format")
+except ValueError:
+    print("Error reading " + filename + ": invalid format")
     exit()
 
 if args.fields:
-    print (args.tracer + " fields")
-    print ("axes:")
+    print(args.tracer + " fields")
+    print("axes:")
     for key in data['keys'].keys():
-        print ("   " + key)
-    print ("statistics:")
+        print("   " + key)
+    print("statistics:")
     for map in data['maps'].keys():
-        print ("   " + map)
+        print("   " + map)
     for hist in data['hists'].keys():
-        print ("   " + hist)
+        print("   " + hist)
     exit()
 
 #
@@ -97,7 +97,7 @@ try:
     with open(filename, 'r') as f:
         file_content = f.read()
 except IOError as e:
-    print ("Error reading " + filename + ": " + e.strerror)
+    print("Error reading " + filename + ": " + e.strerror)
     exit()
 
 template = IterativeTemplate(file_content)
@@ -132,7 +132,7 @@ else:
 # Perform template substitutions and execute or output the resulting script
 script = template.render()
 if args.bcc:
-    print (script)
+    print(script, end='')
     exit(0)
 else:
     try:
@@ -140,5 +140,5 @@ else:
     except KeyboardInterrupt:
         exit(0)
     except Exception as e:
-        print (e)
+        print(e)
         exit(1)
