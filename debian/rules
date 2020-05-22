@@ -16,6 +16,7 @@ override_dh_auto_build:
 	mkdir -p build/cmd/
 	cp cmd/estat.py build/cmd/estat
 	cp cmd/stbtrace.py build/cmd/stbtrace
+	cp cmd/nfs_threads.py build/cmd/nfs_threads
 
 override_dh_auto_install:
 	dh_install build/cmd/* /usr/bin
