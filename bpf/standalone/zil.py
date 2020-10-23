@@ -37,9 +37,7 @@ bpf_text += """
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <uapi/linux/bpf.h>
-#include <sys/file.h>
-#include <sys/fs/zfs.h>
-#include <sys/zfs_vfsops.h>
+#include <sys/xvattr.h>
 #include <sys/zfs_znode.h>
 #include <sys/dmu_objset.h>
 #include <sys/spa_impl.h>
@@ -256,11 +254,10 @@ KVER = os.popen('uname -r').read().rstrip()
 b = BPF(text=bpf_text,
         cflags=["-include",
                 "/usr/src/zfs-" + KVER + "/zfs_config.h",
+                "-include",
+                "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
                 "-I/usr/src/zfs-" + KVER + "/include/",
-                "-I/usr/src/zfs-" + KVER + "/include/spl",
-                "-I/usr/src/zfs-" + KVER + "/include/",
-                "-I/usr/src/zfs-" + KVER + "/include/linux",
-                "-DCC_USING_FENTRY"])
+                "-I/usr/src/zfs-" + KVER + "/include/spl"])
 
 b.attach_kprobe(event="zfs_write", fn_name="zfs_write_entry")
 b.attach_kretprobe(event="zfs_write", fn_name="zfs_write_return")
