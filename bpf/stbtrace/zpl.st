@@ -178,8 +178,7 @@ b = BPF(text=bpf_text,
                 "-include",
                 "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
                 "-I/usr/src/zfs-" + KVER + "/include/",
-                "-I/usr/src/zfs-" + KVER + "/include/spl/",
-                "-DCC_USING_FENTRY"])
+                "-I/usr/src/zfs-" + KVER + "/include/spl/"])
 
 b.attach_kprobe(event="zfs_read", fn_name="zfs_read_start")
 b.attach_kprobe(event="zfs_write", fn_name="zfs_write_start")
