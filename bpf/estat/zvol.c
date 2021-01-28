@@ -11,6 +11,7 @@
 #include <sys/zil_impl.h>
 #include <sys/zfs_rlock.h>
 #include <sys/spa_impl.h>
+#include <sys/dataset_kstats.h>
 #include <sys/zvol_impl.h>
 
 
@@ -18,9 +19,11 @@
 #define	ZVOL_READ 1
 #define	ZVOL_WRITE 2
 #define	NAME_LENGTH 6
-#define	AXIS_LENGTH 5
+#define	AXIS_LENGTH 6
 #define	READ_LENGTH 5
 #define	WRITE_LENGTH 6
+#define	SYNC_LENGTH 5
+#define	ASYNC_LENGTH 6
 
 #ifndef OPTARG
 #define	POOL "domain0"
@@ -116,10 +119,10 @@ zvol_return(struct pt_regs *ctx)
 		__builtin_memcpy(&name, "read", READ_LENGTH);
 	} else if (sync) {
 		__builtin_memcpy(&name, "write", WRITE_LENGTH);
-		__builtin_memcpy(&axis, "sync", WRITE_LENGTH);
+		__builtin_memcpy(&axis, "sync", SYNC_LENGTH);
 	} else {
 		__builtin_memcpy(&name, "write", WRITE_LENGTH);
-		__builtin_memcpy(&axis, "async", WRITE_LENGTH);
+		__builtin_memcpy(&axis, "async", ASYNC_LENGTH);
 	}
 	AGGREGATE_DATA(name, axis, delta, data->bytes);
 	zvol_base_data.delete(&pid);
