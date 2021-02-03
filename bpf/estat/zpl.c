@@ -27,6 +27,10 @@ BPF_HASH(io_info_map, u32, io_info_t);
 #else
 #define	POOL (OPTARG)
 #endif
+#define ZFS_READ_SYNC_LENGTH 14
+#define ZFS_READ_ASYNC_LENGTH 15
+#define ZFS_WRITE_SYNC_LENGTH 15
+#define ZFS_WRITE_ASYNC_LENGTH 16
 
 // TODO factor this out into a helper so that it isn't duplicated
 static inline bool
@@ -42,7 +46,7 @@ equal_to_pool(char *str)
 }
 
 static inline int
-zfs_read_write_entry(io_info_t *info, struct inode *ip, uio_t *uio, int flags)
+zfs_read_write_entry(io_info_t *info, struct inode *ip, zfs_uio_t *uio, int flags)
 {
 	// Essentially ITOZSB, but written explicitly so that BCC can insert
 	// the necessary calls to bpf_probe_read.
@@ -68,7 +72,7 @@ zfs_read_write_entry(io_info_t *info, struct inode *ip, uio_t *uio, int flags)
 
 // @@ kprobe|zfs_read|zfs_read_entry
 int
-zfs_read_entry(struct pt_regs *ctx, struct inode *ip, uio_t *uio, int flags)
+zfs_read_entry(struct pt_regs *ctx, struct inode *ip, zfs_uio_t *uio, int flags)
 {
 	io_info_t info = {};
 	info.is_write = false;
@@ -77,7 +81,7 @@ zfs_read_entry(struct pt_regs *ctx, struct inode *ip, uio_t *uio, int flags)
 
 // @@ kprobe|zfs_write|zfs_write_entry
 int
-zfs_write_entry(struct pt_regs *ctx, struct inode *ip, uio_t *uio, int flags)
+zfs_write_entry(struct pt_regs *ctx, struct inode *ip, zfs_uio_t *uio, int flags)
 {
 	io_info_t info = {};
 	info.is_write = true;
@@ -87,7 +91,7 @@ zfs_write_entry(struct pt_regs *ctx, struct inode *ip, uio_t *uio, int flags)
 // @@ kretprobe|zfs_read|zfs_read_write_exit
 // @@ kretprobe|zfs_write|zfs_read_write_exit
 int
-zfs_read_write_exit(struct pt_regs *ctx, struct inode *ip, uio_t *uio)
+zfs_read_write_exit(struct pt_regs *ctx, struct inode *ip, zfs_uio_t *uio)
 {
 	u32 tid = bpf_get_current_pid_tgid();
 	io_info_t *info = io_info_map.lookup(&tid);
@@ -97,24 +101,20 @@ zfs_read_write_exit(struct pt_regs *ctx, struct inode *ip, uio_t *uio)
 
 	u64 delta = bpf_ktime_get_ns() - info->start_time;
 
-	char name[32];
+	char name[16];
 	int offset;
 	if (info->is_write) {
-		const char s[] = "zfs_write";
-		__builtin_memcpy(&name, s, sizeof (s));
-		offset = sizeof (s) - 1;
+		if (info->is_sync) {
+			__builtin_memcpy(name, "zfs_write sync", ZFS_WRITE_SYNC_LENGTH);
+		} else {
+			__builtin_memcpy(name, "zfs_write async", ZFS_WRITE_ASYNC_LENGTH);
+		}
 	} else {
-		const char s[] = "zfs_read";
-		__builtin_memcpy(&name, s, sizeof (s));
-		offset = sizeof (s) - 1;
-	}
-
-	if (info->is_sync) {
-		const char s[] = " sync";
-		__builtin_memcpy(name + offset, s, sizeof (s));
-	} else {
-		const char s[] = " async";
-		__builtin_memcpy(name + offset, s, sizeof (s));
+		if (info->is_sync) {
+			__builtin_memcpy(name, "zfs_read sync", ZFS_READ_SYNC_LENGTH);
+		} else {
+			__builtin_memcpy(name, "zfs_read async", ZFS_READ_ASYNC_LENGTH);
+		}
 	}
 
 	char axis = 0;
