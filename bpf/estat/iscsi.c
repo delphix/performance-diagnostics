@@ -19,7 +19,6 @@
 
 typedef struct {
 	u64 ts;
-	u64 flags;
 	u64 size;
 } iscsi_data_t;
 
@@ -33,7 +32,6 @@ iscsi_target_start(struct pt_regs *ctx, struct iscsi_conn *conn,
 {
 	iscsi_data_t data = {};
 	data.ts = bpf_ktime_get_ns();
-	data.flags = hdr->flags;
 	data.size = hdr->data_length;
 	iscsi_base_data.update((u64 *) &cmd, &data);
 
@@ -56,6 +54,7 @@ aggregate_data(iscsi_data_t *data, u64 ts, char *opstr)
 }
 
 // @@ kprobe|iscsit_build_rsp_pdu|iscsi_target_end
+// @@ kprobe|iscsit_build_datain_pdu|iscsi_target_end
 int
 iscsi_target_end(struct pt_regs *ctx, struct iscsi_cmd *cmd)
 {
@@ -67,9 +66,9 @@ iscsi_target_end(struct pt_regs *ctx, struct iscsi_cmd *cmd)
 		return (0);   // missed issue
 	}
 
-	if (data->flags & ISCSI_FLAG_CMD_READ) {
+	if (cmd->data_direction == DMA_FROM_DEVICE) {
 		aggregate_data(data, ts, READ_STR);
-	} else if (data->flags & ISCSI_FLAG_CMD_WRITE) {
+	} else if (cmd->data_direction & DMA_TO_DEVICE) {
 		aggregate_data(data, ts, WRITE_STR);
 	}
 	iscsi_base_data.delete((u64 *) &cmd);

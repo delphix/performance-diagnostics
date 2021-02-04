@@ -394,8 +394,7 @@ cflags = ["-include",
           "-include",
           "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
           "-I/usr/src/zfs-" + KVER + "/include/",
-          "-I/usr/src/zfs-" + KVER + "/include/spl",
-          "-DCC_USING_FENTRY"]
+          "-I/usr/src/zfs-" + KVER + "/include/spl"]
 if script_arg:
     cflags.append("-DOPTARG=\"" + script_arg + "\"")
 
