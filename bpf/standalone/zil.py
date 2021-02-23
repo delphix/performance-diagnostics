@@ -67,7 +67,6 @@ typedef struct {
     u64 lwb_ts;
     u64 io_ts;
     int sync;
-    int alloc_count;
 } zil_tid_info_t;
 
 BPF_HASH(zil_info_map, u32, zil_tid_info_t);
@@ -83,7 +82,7 @@ typedef struct {
 HIST_KEY(zil_hist_key_t, zil_key_t);
 
 BPF_HASH(average_latency, zil_key_t, average_t);
-BPF_HASH(average_allocs, zil_key_t, average_t);
+BPF_HASH(call_counts, zil_key_t, u64);
 BPF_HASH(zil_latency, zil_hist_key_t, u64);
 
 static inline bool equal_to_pool(char *str)
@@ -111,9 +110,20 @@ static int latency_average_and_histogram(char *name, u64 delta)
     avg->sum += delta;
     hist_key.slot = bpf_log2l(delta);
     zil_latency.increment(hist_key);
+    call_counts.increment(key);
 
     return 0;
 }
+
+static int count_call(char *name) {
+    zil_key_t key = {};
+    __builtin_memcpy(&key.name, name, NAME_LENGTH);
+    key.t = 1;
+    key.cpuid = bpf_get_smp_processor_id();
+    call_counts.increment(key);
+    return 0;
+}
+
 
 int zfs_write_entry(struct pt_regs *ctx, struct znode *zn,
 void *uio, int ioflag)
@@ -128,7 +138,6 @@ void *uio, int ioflag)
     if (!equal_to_pool(spa->spa_name))
                 return 0;
 
-    info.alloc_count = 0;
     info.sync = ioflag & (O_SYNC | O_DSYNC) ||
             zfsvfs->z_os->os_sync == ZFS_SYNC_ALWAYS;
     zil_info_map.update(&tid, &info);
@@ -154,13 +163,50 @@ int zfs_write_return(struct pt_regs *cts)
     return 0;
 }
 
+int zfs_fsync_entry(struct pt_regs *ctx, struct znode *zn)
+{
+    u32 tid = bpf_get_current_pid_tgid();
+    zil_tid_info_t info = {};
+
+    info.write_ts = bpf_ktime_get_ns();
+    zfsvfs_t *zfsvfs = zn->z_inode.i_sb->s_fs_info;
+    objset_t *z_os = zfsvfs->z_os;
+    spa_t *spa = z_os->os_spa;
+    if (!equal_to_pool(spa->spa_name))
+                return 0;
+
+    zil_info_map.update(&tid, &info);
+    return 0;
+}
+
+int zfs_fsync_return(struct pt_regs *cts)
+{
+    u32 tid = bpf_get_current_pid_tgid();
+    zil_tid_info_t *info = zil_info_map.lookup(&tid);
+    if (info == NULL) {
+        return 0;
+    }
+
+    // Record if called zil_commit
+    if (info->commit_ts != 0) {
+        latency_average_and_histogram("zfs_fysnc",
+            (bpf_ktime_get_ns() - info->write_ts) / 1000);
+    }
+
+    zil_info_map.delete(&tid);
+    return 0;
+}
+
+
 
 int zil_commit_entry(struct pt_regs *ctx)
 {
     u32 tid = bpf_get_current_pid_tgid();
     zil_tid_info_t *info = zil_info_map.lookup(&tid);
-    if (info == NULL)
+    if (info == NULL) {
         return 0;
+    }
+
     info->commit_ts = bpf_ktime_get_ns();
     return 0;
 }
@@ -176,14 +222,6 @@ int zil_commit_return(struct pt_regs *cts)
     latency_average_and_histogram("zil_commit",
              (bpf_ktime_get_ns() - info->commit_ts) / 1000);
 
-    zil_key_t key = {};
-    key.t = 1;
-    key.cpuid = bpf_get_smp_processor_id();
-    __builtin_memcpy(&key.name, "Allocations", NAME_LENGTH);
-    average_t zero_avg = ZERO_AVERAGE;
-    average_t *avg = average_allocs.lookup_or_init(&key, &zero_avg);
-    avg->count++;
-    avg->sum += 10; //info->alloc_count;
     return 0;
 }
 
@@ -191,11 +229,10 @@ int zil_commit_return(struct pt_regs *cts)
 int zil_get_commit_list_entry(struct pt_regs *ctx)
 {
     u32 tid = bpf_get_current_pid_tgid();
-    u64 ts = bpf_ktime_get_ns();
     zil_tid_info_t *info = zil_info_map.lookup(&tid);
     if (info == NULL)
         return 0;
-    info->lwb_ts = ts;
+    info->lwb_ts = bpf_ktime_get_ns();
     return 0;
 }
 
@@ -207,7 +244,9 @@ int zil_process_commit_list_return(struct pt_regs *cts)
     if (info == NULL) {
         return 0;
     }
-
+    if (info->lwb_ts == 0) {
+        return 0;
+    }
 
     return latency_average_and_histogram("allocation",
              (bpf_ktime_get_ns() - info->lwb_ts) / 1000);
@@ -243,10 +282,33 @@ int zio_alloc_zil_return(struct pt_regs *cts)
     if (info == NULL) {
         return 0;
     }
-    info->alloc_count++;
+    count_call("block allocations");
     return 0;
 }
 
+int zil_commit_waiter_skip_entry(struct pt_regs *cts)
+{
+    u32 tid = bpf_get_current_pid_tgid();
+    zil_tid_info_t *info = zil_info_map.lookup(&tid);
+    if (info == NULL) {
+        return 0;
+    }
+
+    count_call("waiter skip");
+    return 0;
+}
+
+int zil_commit_writer_stall_entry(struct pt_regs *cts)
+{
+    u32 tid = bpf_get_current_pid_tgid();
+    zil_tid_info_t *info = zil_info_map.lookup(&tid);
+    if (info == NULL) {
+        return 0;
+    }
+
+    count_call("writer stall");
+    return 0;
+}
 """
 
 # load BPF program
@@ -261,6 +323,8 @@ b = BPF(text=bpf_text,
 
 b.attach_kprobe(event="zfs_write", fn_name="zfs_write_entry")
 b.attach_kretprobe(event="zfs_write", fn_name="zfs_write_return")
+b.attach_kprobe(event="zfs_fsync", fn_name="zfs_fsync_entry")
+b.attach_kretprobe(event="zfs_fsync", fn_name="zfs_fsync_return")
 b.attach_kprobe(event="zil_commit", fn_name="zil_commit_entry")
 b.attach_kretprobe(event="zil_commit", fn_name="zil_commit_return")
 b.attach_kretprobe(event="zil_process_commit_list",
@@ -271,19 +335,24 @@ b.attach_kprobe(event="zil_commit_waiter",
                 fn_name="zil_commit_waiter_entry")
 b.attach_kretprobe(event="zil_commit_waiter",
                    fn_name="zil_commit_waiter_return")
-b.attach_kretprobe(event="zio_alloc_zil", fn_name="zio_alloc_zil_return")
+b.attach_kretprobe(event="zio_alloc_zil",
+                   fn_name="zio_alloc_zil_return")
+b.attach_kprobe(event="zil_commit_waiter_skip",
+                fn_name="zil_commit_waiter_skip_entry")
+b.attach_kprobe(event="zil_commit_writer_stall",
+                fn_name="zil_commit_writer_stall_entry")
 
 latency_helper = BCCHelper(b, BCCHelper.ESTAT_PRINT_MODE)
 latency_helper.add_aggregation("average_latency",
-                               BCCHelper.AVERAGE_AGGREGATION, "avg")
+                               BCCHelper.AVERAGE_AGGREGATION, "avg latency")
 latency_helper.add_aggregation("zil_latency",
                                BCCHelper.LOG_HISTOGRAM_AGGREGATION, "latency")
 latency_helper.add_key_type("name")
 
-alloc_helper = BCCHelper(b, BCCHelper.ESTAT_PRINT_MODE)
-alloc_helper.add_aggregation("average_allocs",
-                             BCCHelper.AVERAGE_AGGREGATION, "avg")
-alloc_helper.add_key_type("name")
+call_count_helper = BCCHelper(b, BCCHelper.ESTAT_PRINT_MODE)
+call_count_helper.add_aggregation("call_counts",
+                                  BCCHelper.COUNT_AGGREGATION, "count")
+call_count_helper.add_key_type("name")
 
 if (not args.collection_sec):
     print(" Tracing enabled... Hit Ctrl-C to end.")
@@ -294,7 +363,7 @@ if (args.collection_sec):
     try:
         print("%-16s\n" % strftime("%D - %H:%M:%S %Z"))
         latency_helper.printall()
-        alloc_helper.printall()
+        call_count_helper.printall()
         exit(0)
     except Exception as e:
         print(str(e))
@@ -307,12 +376,12 @@ while True:
     except KeyboardInterrupt:
         print("%-16s\n" % strftime("%D - %H:%M:%S %Z"))
         latency_helper.printall()
-        alloc_helper.printall()
+        call_count_helper.printall()
         break
     try:
         print("%-16s\n" % strftime("%D - %H:%M:%S %Z"))
         latency_helper.printall()
-        alloc_helper.printall()
+        call_count_helper.printall()
     except Exception as e:
         print(str(e))
         break
