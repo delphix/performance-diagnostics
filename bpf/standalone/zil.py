@@ -115,14 +115,14 @@ static int latency_average_and_histogram(char *name, u64 delta)
     return 0;
 }
 
-int zfs_write_entry(struct pt_regs *ctx, struct inode *ip,
-uio_t *uio, int ioflag)
+int zfs_write_entry(struct pt_regs *ctx, struct znode *zn,
+void *uio, int ioflag)
 {
     u32 tid = bpf_get_current_pid_tgid();
     zil_tid_info_t info = {};
 
     info.write_ts = bpf_ktime_get_ns();
-    zfsvfs_t *zfsvfs = ip->i_sb->s_fs_info;
+    zfsvfs_t *zfsvfs = zn->z_inode.i_sb->s_fs_info;
     objset_t *z_os = zfsvfs->z_os;
     spa_t *spa = z_os->os_spa;
     if (!equal_to_pool(spa->spa_name))
