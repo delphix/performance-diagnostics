@@ -89,14 +89,14 @@ BPF_HASH(read_latency, hist_lat_key, u64);
 BPF_HASH(read_average, lat_key, average_t);
 BPF_PERCPU_ARRAY(arc_count, u32, NCOUNT_INDEX);
 
-int zfs_read_entry(struct pt_regs *ctx, struct inode *ip)
+int zfs_read_entry(struct pt_regs *ctx, struct znode *zn)
 {
     u32 tid = bpf_get_current_pid_tgid();
     u64 ts = bpf_ktime_get_ns();
     arc_prefetch_info_t info = {ts};
 
     // filter by pool
-    zfsvfs_t *zfsvfs = ip->i_sb->s_fs_info;
+    zfsvfs_t *zfsvfs = zn->z_inode.i_sb->s_fs_info;
     objset_t *z_os = zfsvfs->z_os;
     spa_t *spa = z_os->os_spa;
     if (POOL_COMPARE(spa))
