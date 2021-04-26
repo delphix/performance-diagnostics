@@ -46,11 +46,11 @@ equal_to_pool(char *str)
 }
 
 static inline int
-zfs_read_write_entry(io_info_t *info, struct inode *ip, zfs_uio_t *uio, int flags)
+zfs_read_write_entry(io_info_t *info, struct znode *zn, zfs_uio_t *uio, int flags)
 {
 	// Essentially ITOZSB, but written explicitly so that BCC can insert
 	// the necessary calls to bpf_probe_read.
-	zfsvfs_t *zfsvfs = ip->i_sb->s_fs_info;
+	zfsvfs_t *zfsvfs = zn->z_inode.i_sb->s_fs_info;
 
 	objset_t *z_os = zfsvfs->z_os;
 	spa_t *spa = z_os->os_spa;
@@ -72,26 +72,26 @@ zfs_read_write_entry(io_info_t *info, struct inode *ip, zfs_uio_t *uio, int flag
 
 // @@ kprobe|zfs_read|zfs_read_entry
 int
-zfs_read_entry(struct pt_regs *ctx, struct inode *ip, zfs_uio_t *uio, int flags)
+zfs_read_entry(struct pt_regs *ctx, struct znode *zn, zfs_uio_t *uio, int flags)
 {
 	io_info_t info = {};
 	info.is_write = false;
-	return (zfs_read_write_entry(&info, ip, uio, flags));
+	return (zfs_read_write_entry(&info, zn, uio, flags));
 }
 
 // @@ kprobe|zfs_write|zfs_write_entry
 int
-zfs_write_entry(struct pt_regs *ctx, struct inode *ip, zfs_uio_t *uio, int flags)
+zfs_write_entry(struct pt_regs *ctx, struct znode *zn, zfs_uio_t *uio, int flags)
 {
 	io_info_t info = {};
 	info.is_write = true;
-	return (zfs_read_write_entry(&info, ip, uio, flags));
+	return (zfs_read_write_entry(&info, zn, uio, flags));
 }
 
 // @@ kretprobe|zfs_read|zfs_read_write_exit
 // @@ kretprobe|zfs_write|zfs_read_write_exit
 int
-zfs_read_write_exit(struct pt_regs *ctx, struct inode *ip, zfs_uio_t *uio)
+zfs_read_write_exit(struct pt_regs *ctx, struct znode *zn, zfs_uio_t *uio)
 {
 	u32 tid = bpf_get_current_pid_tgid();
 	io_info_t *info = io_info_map.lookup(&tid);
