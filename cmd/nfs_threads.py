@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (c) 2020 by Delphix. All rights reserved.
+# Copyright (c) 2020-2021 by Delphix. All rights reserved.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
@@ -9,22 +9,24 @@
 Display NFS thread usage info along with NFS I/O context.
 
 Output Sample:
-
- packets  sockets threads threads metadata  read    read  write   write
- arrived enqueued   woken   used     calls  iops thruput   iops thruput
-    4589        0    4589     25        16   273   3.6MB    212   2.6MB
-    4735        0    4735      8         1   287   3.8MB    212   2.7MB
-    4693        0    4693     10         0   280   3.7MB    216   2.7MB
-    4625        0    4625     15         0   278   3.7MB    212   2.6MB
-    4687        0    4687      7         1   285   3.8MB    210   2.6MB
-    4701        0    4701     12         0   285   3.8MB    215   2.7MB
+packets   sockets  threads  threads  metadata  read     read  write    write
+arrived  enqueued    woken     used     calls  iops  thruput   iops  thruput
+  78683       538    78145       57       209  3390  142.5MB   9014  107.0MB
+ 106114      4527   101587       63        50  4211  166.8MB  13294  133.0MB
+ 110220      1511   108709       61        10  4347   10.7MB  13767  137.5MB
+  80630      4741    75889       62        50  4218  179.4MB   8743  107.9MB
+ 115463     11400   104063       62        21  4231  179.4MB  15404  150.5MB
 '''
 
+import os
 import psutil
 from signal import signal, SIGINT
 import sys
 from time import sleep
+import datetime
+import argparse
 
+PROCFS_NFSD = "/proc/fs/nfsd"
 POOL_STATS = "/proc/fs/nfsd/pool_stats"
 NFSD_STATS = "/proc/net/rpc/nfsd"
 
@@ -33,18 +35,26 @@ H1 = ['packets', 'sockets', 'threads', 'threads', 'metadata', 'read',
 H2 = ['arrived', 'enqueued', 'woken', 'used', 'calls', 'iops', 'thruput',
       'iops', 'thruput']
 
-INTERVAL = 5
+
+def parse_cmdline():
+    parser = argparse.ArgumentParser(
+        description='Display nfsd thread usage info along with NFS I/O '
+        'context')
+    parser.add_argument(
+        '--interval', type=int, choices=range(1, 31),
+        default=5, help='sampling interval in seconds (defaults to 5)')
+    return parser.parse_args()
 
 
 def server_stopped(message=''):
-    print("NFS Server Stopped {}".format(message))
-    sys.exit()
+    print("*NFS Server Stopped {}".format(message))
 
 
 def print_header(header):
+    print(' '*19, end='')
     for col in header:
         print('{0:>10}'.format(col), end='')
-    print()
+    print(flush=True)
 
 
 def pool_stats():
@@ -56,10 +66,10 @@ def pool_stats():
                     packets = int(fields[1])
                     enqueued = int(fields[2])
                     woken = int(fields[3])
-                    timedout = int(fields[4])
-        return packets, enqueued, woken, timedout
-    except OSError:
+        return packets, enqueued, woken, None
+    except OSError as e:
         server_stopped()
+        return 0, 0, 0, e
 
 
 def nfs_stats():
@@ -93,21 +103,22 @@ def nfs_stats():
                     metadata += int(fields[11])
                     metadata += int(fields[17])
                     metadata += int(fields[36])
-        return readbytes, writebytes, readops, writeops, metadata
-    except OSError:
+        return readbytes, writebytes, readops, writeops, metadata, None
+    except OSError as e:
         server_stopped()
+        return 0, 0, 0, 0, 0, e
 
 
-def context_switches(pids):
-    "Return a list of context switches per process in pids"
+def cpu_time(pids):
+    "Return a list of time spent on cpu per process in pids"
     ls = []
     for pid in pids:
         try:
-            pctxsw = psutil.Process(pid).num_ctx_switches()
-            ls.append(pctxsw.voluntary + pctxsw.involuntary)
-        except psutil.NoSuchProcess:
+            ls.append(psutil.Process(pid).cpu_times().system)
+        except psutil.NoSuchProcess as e:
             server_stopped()
-    return ls
+            return None, e
+    return ls, None
 
 
 def nfsd_processes():
@@ -132,35 +143,44 @@ def print_thruput(value):
         print('{0:>8}KB'.format(int(value / 1024)), end='')
 
 
-def print_line():
+def print_line(interval):
+    lines = 0
     pids = nfsd_processes()
 
-    prevSwitches = context_switches(pids)
-    prevPackets, prevEnqueued, prevWoken, prevTimedout = pool_stats()
-    prevRB, prevWB, prevRO, prevWO, prevMeta = nfs_stats()
+    prevCpuTime, e1 = cpu_time(pids)
+    prevPackets, prevEnqueued, prevWoken, e2 = pool_stats()
+    prevRB, prevWB, prevRO, prevWO, prevMeta, e3 = nfs_stats()
+    if e1 or e2 or e3:
+        return
 
-    while(not sleep(INTERVAL)):
-        nextSwitches = context_switches(pids)
-        nextPackets, nextEnqueued, nextWoken, nextTimedout = pool_stats()
-        nextRB, nextWB, nextRO, nextWO, nextMeta = nfs_stats()
+    while(not sleep(interval)):
+        nextCpuTime, e1 = cpu_time(pids)
+        nextPackets, nextEnqueued, nextWoken, e2 = pool_stats()
+        nextRB, nextWB, nextRO, nextWO, nextMeta, e3 = nfs_stats()
+        if e1 or e2 or e3:
+            return
 
+        #
+        # Count threads that used cpu time in this interval
+        #
         threads = 0
-        for i in range(0, len(prevSwitches)):
-            if not prevSwitches[i] == nextSwitches[i]:
+        for i in range(0, len(prevCpuTime)):
+            if not prevCpuTime[i] == nextCpuTime[i]:
                 threads += 1
-        threads -= nextTimedout - prevTimedout
-        prevSwitches = nextSwitches.copy()
+        prevCpuTime = nextCpuTime.copy()
 
         #
         # The published 'sockets-enqueued' value needs adjustment
         #
         enqueued = (nextEnqueued - prevEnqueued) - (nextWoken - prevWoken)
+        if enqueued < 0:
+            enqueued = 0
 
         #
         # For IOPS values less than 10 display with decimal
         #
-        readOps = (nextRO - prevRO) / INTERVAL
-        writeOps = (nextWO - prevWO) / INTERVAL
+        readOps = (nextRO - prevRO) / interval
+        writeOps = (nextWO - prevWO) / interval
         readOps = int(readOps) if readOps > 9 else round(readOps, 1)
         writeOps = int(writeOps) if writeOps > 9 else round(writeOps, 1)
 
@@ -173,35 +193,43 @@ def print_line():
         if nextWB < prevWB:
             prevWB = 0
 
+        if lines % 48 == 0:
+            print_header(H1)
+            print_header(H2)
+
+        print('{:%Y-%m-%d %H:%M:%S}'.format(datetime.datetime.now()), end='')
         print_value(nextPackets - prevPackets)
         print_value(enqueued)
         print_value(nextWoken - prevWoken)
         print_value(threads)
         print_value(nextMeta - prevMeta)
         print_value(readOps)
-        print_thruput((nextRB - prevRB) / INTERVAL)
+        print_thruput((nextRB - prevRB) / interval)
         print_value(writeOps)
-        print_thruput((nextWB - prevWB) / INTERVAL)
-        print()
+        print_thruput((nextWB - prevWB) / interval)
+        print(flush=True)
 
         prevPackets = nextPackets
         prevEnqueued = nextEnqueued
         prevWoken = nextWoken
-        prevTimedout = nextTimedout
         prevMeta = nextMeta
         prevRB = nextRB
         prevWB = nextWB
         prevRO = nextRO
         prevWO = nextWO
+        lines += 1
 
 
 def handler(signal_received, frame):
-    print()
+    print(flush=True)
     sys.exit(0)
 
 
 signal(SIGINT, handler)
 
-print_header(H1)
-print_header(H2)
-print_line()
+arguments = parse_cmdline()
+
+while True:
+    if os.path.exists(PROCFS_NFSD):
+        print_line(arguments.interval)
+    sleep(2)
