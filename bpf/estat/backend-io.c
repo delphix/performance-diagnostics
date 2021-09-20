@@ -29,7 +29,6 @@ typedef struct {
 
 BPF_HASH(io_base_data, u64, io_data_t);
 
-// @@ kprobe|blk_start_request|disk_io_start
 // @@ kprobe|blk_mq_start_request|disk_io_start
 int
 disk_io_start(struct pt_regs *ctx, struct request *reqp)
