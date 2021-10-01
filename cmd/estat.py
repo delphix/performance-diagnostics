@@ -95,6 +95,11 @@ help_msg += """
   The subcommands listed in the following section are stand alone tracers.
   Each has it's own options as detailed below.
 
+  estat arc_prefetch [options]
+      Collect arc_prefetch statistics for 5 second intervals.
+      -h          show txg help message and exit
+      -p POOL     set the pool to monitor (default: domain0)
+
   estat txg [options]
       Collect spa_sync statistics for each txg.
       -h          show txg help message and exit
