@@ -44,7 +44,7 @@ disk_io_start(struct pt_regs *ctx, struct request *reqp)
 	return (0);
 }
 
-// @@ kprobe|blk_account_io_completion|disk_io_done
+// @@ kprobe|blk_account_io_done|disk_io_done
 int
 disk_io_done(struct pt_regs *ctx, struct request *reqp)
 {
