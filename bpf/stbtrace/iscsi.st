@@ -38,8 +38,8 @@ bpf_text += """
 #define OP_NAME_LEN 6
 typedef struct {
     u64 ts;
-    u64 flags;
     u64 size;
+    u32 direction;
 } iscsi_data_t;
 
 // Key structure for scalar aggegations maps
@@ -52,7 +52,8 @@ typedef struct {
 
 HIST_KEY(iscsi_hist_key_t, iscsi_key_t);
 
-BPF_HASH(iscsi_base_data, u64, iscsi_data_t);
+BPF_HASH(iscsi_start_ts, u64, u64);
+BPF_HASH(iscsi_base_data, u32, iscsi_data_t);
 $maps:{map|
 BPF_HASH($map.name$, iscsi_key_t, $map.type$);
 }$
@@ -64,13 +65,31 @@ BPF_HASH($hist.name$, iscsi_hist_key_t, u64);
 int iscsi_target_start(struct pt_regs *ctx, struct iscsi_conn *conn,
                        struct iscsi_cmd *cmd, struct iscsi_scsi_req *hdr)
 {
-    iscsi_data_t data = {};
-    data.ts = bpf_ktime_get_ns();
-    data.flags = hdr->flags;
-    data.size = hdr->data_length;
-    iscsi_base_data.update((u64 *) &cmd, &data);
+        u64 ts = bpf_ktime_get_ns();
+        iscsi_start_ts.update((u64 *) &cmd, &ts);
 
-    return 0;
+        return (0);
+}
+
+int iscsi_target_response(struct pt_regs *ctx, struct iscsi_conn *conn,
+                          struct iscsi_cmd *cmd, int state)
+{
+        u32 tid = bpf_get_current_pid_tgid();
+        iscsi_data_t data = {};
+
+        u64 *tsp = iscsi_start_ts.lookup((u64 *) &cmd);
+        if (tsp == 0) {
+                return (0);   // missed issue
+        }
+
+        data.ts = *tsp;
+        data.size = cmd->se_cmd.data_length;
+        data.direction = cmd->data_direction;
+
+        iscsi_base_data.update(&tid, &data);
+        iscsi_start_ts.delete((u64 *) &cmd);
+
+        return (0);
 }
 
 static int aggregate_data(iscsi_data_t *data, u64 ts, char *opstr)
@@ -99,33 +118,31 @@ static int aggregate_data(iscsi_data_t *data, u64 ts, char *opstr)
     return 0;
 }
 
-int iscsi_target_end(struct pt_regs *ctx, struct iscsi_cmd *cmd)
+int iscsi_target_end(struct pt_regs *ctx)
 {
-    u64 ts = bpf_ktime_get_ns();
-    iscsi_data_t *data = iscsi_base_data.lookup((u64 *) &cmd);
-    u64 delta;
-    iscsi_key_t key = {};
-    char *opstr;
+        u64 ts = bpf_ktime_get_ns();
+        u32 tid = bpf_get_current_pid_tgid();
+        iscsi_data_t *data = iscsi_base_data.lookup(&tid);
 
-    if (data == 0) {
-        return 0;   // missed issue
-    }
+        if (data == 0) {
+                return (0);   // missed issue
+        }
 
-    if (data->flags & ISCSI_FLAG_CMD_READ) {
-        aggregate_data(data, ts, READ_STR);
-    } else if (data->flags & ISCSI_FLAG_CMD_WRITE) {
-        aggregate_data(data, ts, WRITE_STR);
-    }
-    iscsi_base_data.delete((u64 *) &cmd);
+        if (data->direction == DMA_FROM_DEVICE) {
+                aggregate_data(data, ts, READ_STR);
+        } else if (data->direction == DMA_TO_DEVICE) {
+                aggregate_data(data, ts, WRITE_STR);
+        }
+        iscsi_base_data.delete(&tid);
 
-    return 0;
+        return (0);
 }
-
 """  # noqa: W293
 b = BPF(text=bpf_text)
 
 b.attach_kprobe(event="iscsit_process_scsi_cmd", fn_name="iscsi_target_start")
-b.attach_kprobe(event="iscsit_build_rsp_pdu", fn_name="iscsi_target_end")
+b.attach_kprobe(event="iscsit_response_queue", fn_name="iscsi_target_response")
+b.attach_kretprobe(event="iscsit_response_queue", fn_name="iscsi_target_end")
 
 helper = BCCHelper(b, BCCHelper.ANALYTICS_PRINT_MODE)
 $maps:{map|
