@@ -28,7 +28,8 @@ bpf_text += """
 #include <linux/bpf_common.h>
 #include <uapi/linux/bpf.h>
 
-#include <sys/uio.h>
+#include <sys/xvattr.h>
+#include <sys/zfs_znode.h>
 
 // Definitions for this script
 #define READ_STR "read"
@@ -67,9 +68,9 @@ BPF_HASH($hist.name$, zpl_hist_key_t, u64);
 }$
 
 // Probe functions to initialize thread local data
-int zfs_read_start(struct pt_regs *ctx, void *inode, uio_t *uio)
+int zfs_read_start(struct pt_regs *ctx, struct znode *zn, zfs_uio_t *uio,
+   int flags)
 {
-
     u32 pid = bpf_get_current_pid_tgid();
     zpl_data_t data = {};
     data.ts = bpf_ktime_get_ns();
@@ -81,9 +82,9 @@ int zfs_read_start(struct pt_regs *ctx, void *inode, uio_t *uio)
 }
 
 // Probe functions to initialize thread local data
-int zfs_write_start(struct pt_regs *ctx, void *inode, uio_t *uio)
+int zfs_write_start(struct pt_regs *ctx, struct znode *zn, zfs_uio_t *uio,
+    int flags)
 {
-
     u32 pid = bpf_get_current_pid_tgid();
     zpl_data_t data = {};
     data.ts = bpf_ktime_get_ns();
