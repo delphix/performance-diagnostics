@@ -1,0 +1,34 @@
+#!/bin/bash
+BASE_CONFIG=/etc/telegraf/telegraf.base
+DOSE_INPUTS=/etc/telegraf/telegraf.inputs.dose
+PLAYBOOK_INPUTS=/etc/telegraf/telegraf.inputs.playbook
+PLAYBOOK_FLAG=/etc/telegraf/PLAYBOOK_ENABLED
+TELEGRAF_CONFIG=/etc/telegraf/telegraf.conf
+
+
+function engine_is_object_based() {
+	zdb -C | grep "type: 'object_store'" >/dev/null
+	[[ "$?" == "0" ]]
+}
+
+function playbook_is_enabled() {
+	[[ -f $PLAYBOOK_FLAG ]]
+}
+
+rm -f $TELEGRAF_CONFIG
+
+if engine_is_object_based; then
+	if playbook_is_enabled; then
+		cat $PLAYBOOK_INPUTS $DOSE_INPUTS $BASE_CONFIG > $TELEGRAF_CONFIG
+	else
+		cat $DOSE_INPUTS $BASE_CONFIG > $TELEGRAF_CONFIG
+	fi
+else
+	if playbook_is_enabled; then
+		cat $PLAYBOOK_INPUTS $BASE_CONFIG > $TELEGRAF_CONFIG
+	else
+		cat $BASE_CONFIG > $TELEGRAF_CONFIG
+	fi
+fi
+
+/usr/bin/telegraf -config $TELEGRAF_CONFIG

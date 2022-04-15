@@ -1,0 +1,53 @@
+#!/bin/bash
+#
+# Copyright (c) 2021 by Delphix. All rights reserved.
+#
+# Script that enables and, disables the Performance Playbook configuration for 
+# metric collection by Telegraf
+#
+
+PLAYBOOK_FLAG=/etc/telegraf/PLAYBOOK_ENABLED
+
+#
+# Make sure this can only be run as root.
+#
+function die() {
+	echo -e "$(date +%T:%N:%z): $(basename $0): $*" >&2
+	exit 1
+}
+
+[[ $EUID -ne 0 ]] && die "must be run as root"
+
+#
+# Process command.
+#
+
+function usage() {
+	echo "$(basename $0): $*" >&2
+	echo "Usage: $(basename $0) [enable|disable]"
+	exit 2
+}
+
+function enable_playbook() {
+	date
+	echo "Enabling Performance Playbook Metrics"
+	touch $PLAYBOOK_FLAG
+	systemctl restart delphix-telegraf
+}
+
+function disable_playbook() {
+	date
+	echo "Disabling Performance Playbook Metrics"
+	rm -rf $PLAYBOOK_FLAG
+	systemctl restart delphix-telegraf
+}
+
+if [[ $# -ne 1 ]]; then
+	usage
+fi
+
+case "$1" in
+enable) enable_playbook ;;
+disable) disable_playbook ;;
+*) usage ;;
+esac

@@ -1,0 +1,18 @@
+[Unit]
+Description=Delphix Telegraf Metric Collection Agent
+Documentation=https://github.com/influxdata/telegraf
+PartOf=delphix.target
+After=delphix-platform.service
+PartOf=delphix-platform.service
+
+[Service]
+EnvironmentFile=-/etc/default/telegraf
+User=root
+ExecStart=/usr/bin/delphix-telegraf-service
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartForceExitStatus=SIGPIPE
+KillMode=control-group
+
+[Install]
+WantedBy=delphix.target
