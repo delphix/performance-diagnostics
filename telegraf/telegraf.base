@@ -1,0 +1,131 @@
+# Telegraf Configuration
+#
+# Configuration for telegraf agent
+[agent]
+  interval = "10s"
+  round_interval = true
+  flush_interval = "10s"
+  metric_batch_size = 1000
+  metric_buffer_limit = 10000
+
+###############################################################################
+#                            OUTPUT PLUGINS                                   #
+###############################################################################
+# Define the main metric output file, excluding aggregated stats and 
+# Performance Playbook (estat) data.
+[[outputs.file]]
+  files = ["/var/log/telegraf/metrics.json"]
+  rotation_max_size = "50MB"
+  rotation_max_archives = 9
+  data_format = "json"
+  namedrop = ["*estat_*", "agg_*", "zfs", "zpool*", "zcache*"]
+
+# Define output file for ZFS related metrics
+[[outputs.file]]
+  files = ["/var/log/telegraf/metrics_zfs.json"]
+  rotation_max_size = "30MB"
+  rotation_max_archives = 5
+  data_format = "json"
+  namepass = ["zpool*", "zcache*", "zfs"]
+
+# Define output file for Performance Playbook (estat) metrics
+[[outputs.file]]
+  files = ["/var/log/telegraf/metrics_estat.json"]
+  rotation_max_size = "30MB"
+  rotation_max_archives = 5
+  data_format = "json"
+  namepass = ["*estat_*"]
+
+# Define output file for aggregate statistics
+[[outputs.file]]
+  files = ["/var/log/telegraf/metric_aggregates.json"]
+  rotation_max_size = "30MB"
+  rotation_max_archives = 5
+  data_format = "json"
+  namepass = ["agg_*"]
+
+# Enable Live Monitoring, intended for internal use:
+#[[outputs.influxdb]]
+#  urls = ["http://dbsvr.company.com:8086"]
+#  database = "live_metrics"
+#  skip_database_creation = true
+#  data_format = "influx"
+
+###############################################################################
+#                            INPUT PLUGINS                                    #
+###############################################################################
+
+# Get CPU usage
+[[inputs.cpu]]
+  percpu = true
+  totalcpu = true
+  collect_cpu_time = false
+  report_active = false
+  fieldpass = ["usage*"]
+
+# Get mount point stats
+[[inputs.disk]]
+  mount_points = ["/","/domain0"]
+
+# Get disk I/O stats
+[[inputs.diskio]]
+
+# Track stats for the current metric files
+[[inputs.filestat]]
+  files = ["/var/log/telegraf/metrics.json",
+  	   "/var/log/telegraf/metrics_estat.json",
+  	   "/var/log/telegraf/metrics_zfs.json",
+  	   "/var/log/telegraf/metric_aggregates.json"]
+
+# Get Memory stats
+[[inputs.mem]]
+
+# Get some network interface stats
+[[inputs.net]]
+  fieldpass = ["tcp*","bytes*","packets*","err*","drop*"]
+
+# Track CPU and Memory for the "delphix-mgmt" service (and children).
+[[inputs.procstat]]
+  systemd_unit = "delphix-mgmt.service"
+  include_systemd_children = true
+  namedrop = ["procstat_lookup"]
+  fieldpass = ["memory_usage", "cpu_usage", "memory_rss"]
+
+# Track CPU and Memory for the "zfs-object-agent" service (and children).
+[[inputs.procstat]]
+  systemd_unit = "zfs-object-agent.service"
+  include_systemd_children = true
+  namedrop = ["procstat_lookup"]
+  fieldpass = ["memory_usage", "cpu_usage", "memory_rss"]
+
+# Get process counts
+[[inputs.processes]]
+
+# Get swap memory usage
+[[inputs.swap]]
+
+# Get misc 'other' stats (load and uptime)
+[[inputs.system]]
+
+# ZFS kstats (arcstat, abdstat, zfetch, etc)
+[[inputs.zfs]]
+  interval = "1m"
+
+# Detailed ZFS pool metrics from "zpool_influxdb" (noisy)
+#[[inputs.exec]]
+#  commands = ["/usr/lib/x86_64-linux-gnu/zfs/zpool_influxdb"]
+#  data_format = "influx"
+
+###############################################################################
+#                       AGGREGATION PLUGINS                                   #
+###############################################################################
+# Filtered aggregate statistics
+# Calculate Min, Max, Mean, Std Deviation every hour for selected metrics:
+# 	CPU Usage (%idle)
+[[aggregators.basicstats]]
+  period = "1h"
+  drop_original = false
+  stats = ["min", "max", "mean", "stdev"]
+  name_prefix = "agg_"
+  namepass = ["cpu","disk","diskio","mem","net","processes","system","swap"]
+

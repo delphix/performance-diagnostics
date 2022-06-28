@@ -89,6 +89,7 @@ help_msg += """
       -q/-Q     enable/disable latency histograms by size (default: off)
       -y/-Y     enable/disable the summary output (default: on)
       -t/-T     enable/disable emitting the summary total (default: on)
+      -j        set output mode to JSON
       -d LEVEL  set BCC debug level
       -e        emit the resulting eBPF script without executing it
 
@@ -111,7 +112,6 @@ help_msg += """
       particular the time spent allocating a block and time spent waiting for
       the write I/O to complete. If POOL is not specified, defaults to tracing
       the pool 'domain0'.
-
 """
 
 
@@ -149,6 +149,7 @@ accum = False
 script_arg = None
 debug_level = 0
 dump_bpf = False
+output_mode = BCCHelper.ESTAT_PRINT_MODE
 
 
 class Args:
@@ -161,6 +162,7 @@ setattr(args, "size_hist", False)
 setattr(args, "latsize_hist", False)
 setattr(args, "summary", True)
 setattr(args, "total", True)
+setattr(args, "json", False)
 
 #
 # We use getopt rather than argparse because it is very difficult to get
@@ -170,7 +172,7 @@ setattr(args, "total", True)
 # arguments.
 #
 try:
-    opts, rem_args = getopt.getopt(sys.argv[2:], "hmMa:lLzZqQyYnNtTd:e")
+    opts, rem_args = getopt.getopt(sys.argv[2:], "hmMa:lLjzZqQyYnNtTd:e")
 except getopt.GetoptError as err:
     die(err)
 
@@ -194,6 +196,7 @@ for opt, arg in opts:
         dump_bpf = True
     else:
         switches = {'-l': "lat_hist",
+                    '-j': "json",
                     '-z': "size_hist",
                     '-q': "latsize_hist",
                     '-y': "summary",
@@ -218,6 +221,9 @@ except ValueError as e:
 
 if not (args.lat_hist or args.size_hist or args.latsize_hist):
     args.lat_hist = True
+
+if args.json:
+    output_mode = BCCHelper.ANALYTICS_PRINT_MODE
 
 # Now that we are done parsing arguments, construct the text of the BPF program
 try:
@@ -443,7 +449,7 @@ for line in input_text.splitlines():
                 probe_type + "'")
 
 if args.lat_hist or args.size_hist or args.summary:
-    helper1 = BCCHelper(b, BCCHelper.ESTAT_PRINT_MODE)
+    helper1 = BCCHelper(b, output_mode)
     helper1.add_key_type("name")
     helper1.add_key_type("axis")
 
@@ -465,7 +471,7 @@ if args.lat_hist or args.size_hist or args.summary:
                                 "bytes")
 
 if args.latsize_hist:
-    helper2 = BCCHelper(b, BCCHelper.ESTAT_PRINT_MODE)
+    helper2 = BCCHelper(b, output_mode)
     helper2.add_aggregation("latsq", BCCHelper.LL_HISTOGRAM_AGGREGATION,
                             "microseconds")
     helper2.add_key_type("size")
@@ -473,15 +479,16 @@ if args.latsize_hist:
     helper2.add_key_type("axis")
 
 if args.summary and args.total:
-    helper3 = BCCHelper(b, BCCHelper.ESTAT_PRINT_MODE)
+    helper3 = BCCHelper(b, output_mode)
     helper3.add_aggregation("opst", BCCHelper.COUNT_AGGREGATION, "iops(/s)")
     helper3.add_aggregation("datat", BCCHelper.SUM_AGGREGATION,
                             "throughput(k/s)")
     helper3.add_key_type("name")
 
 # Need real time;
-print("%-16s\n" % strftime("%D - %H:%M:%S %Z"))  # TODO deduplicate this line
-print(" Tracing enabled... Hit Ctrl-C to end.")
+if not args.json:
+    print("%-16s\n" % strftime("%D - %H:%M:%S %Z"))  # TODO deduplicate line
+    print(" Tracing enabled... Hit Ctrl-C to end.")
 
 # output
 if monitor:
@@ -508,7 +515,8 @@ if monitor:
                 helper1.printall(clear_data)
             if args.summary and args.total:
                 helper3.printall(clear_data)
-            print("%-16s\n" % strftime("%D - %H:%M:%S %Z"))
+            if not args.json:
+                print("%-16s\n" % strftime("%D - %H:%M:%S %Z"))
         except Exception as e:
             die(e)
 else:
