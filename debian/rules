@@ -22,3 +22,6 @@ override_dh_auto_install:
 	dh_install build/cmd/* /usr/bin
 	dh_install lib/* /usr/share/performance-diagnostics/lib
 	dh_install bpf/* /usr/share/performance-diagnostics/bpf
+	dh_install telegraf/delphix-telegraf-service telegraf/perf_playbook /usr/bin
+	dh_install telegraf/delphix-telegraf.service /lib/systemd/system
+	dh_install telegraf/telegraf* telegraf/*.sh /etc/telegraf
