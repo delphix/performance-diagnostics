@@ -3,6 +3,7 @@
   command = ["/etc/telegraf/zcache-stats.sh"]
   name_override = "zcache_stats"
   signal = "none"
+  restart_delay = "30s"
   data_format = "csv"
   csv_skip_columns = 1
   csv_column_names = ["cache_lookup_count","idx_access_pendch","idx_access_entry","idx_access_chunk",
@@ -21,6 +22,7 @@
   command = ["/etc/telegraf/zpool-iostat-o.sh"]
   name_override = "zpool_iostat-o"
   signal = "none"
+  restart_delay = "30s"
   data_format = "csv"
   csv_column_names = ["pool","agent_io_op_read","agent_io_op_write","agent_io_tput_read",
 			"agent_io_tput_write","store_data_op_get","store_data_op_put","store_data_tput_get",
