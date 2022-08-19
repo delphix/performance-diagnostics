@@ -44,7 +44,7 @@
   data_format = "json"
   namepass = ["agg_*"]
 
-# Enable Live Monitoring, intended for internal use:
+# Enable Live Monitoring, intended for internal Delphix use only:
 #[[outputs.influxdb]]
 #  urls = ["http://dbsvr.company.com:8086"]
 #  database = "live_metrics"

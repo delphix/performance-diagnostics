@@ -66,6 +66,18 @@
   ]
   json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
 
+# Collect output from "estat zio-queue -jm 10"
+[[inputs.execd]]
+  command = ["estat", "zio-queue", "-jm", "10"]
+  name_override = "estat_zio-queue"
+  signal = "none"
+  data_format = "json"
+  tag_keys = [
+    "name",
+    "axis"
+  ]
+  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
+
 # Collect output from "estat zio -jm 10"
 [[inputs.execd]]
   command = ["estat", "zio", "-jm", "10"]
@@ -80,17 +92,17 @@
   json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
 
 # Collect output from "estat metaslab-alloc -jm 10"
-#[[inputs.execd]]
-#  command = ["estat", "metaslab-alloc", "-jm", "10"]
-#  name_override = "estat_metaslab-alloc"
-#  signal = "none"
-#  restart_delay = "30s"
-#  data_format = "json"
-#  tag_keys = [
-#    "name",
-#    "axis"
-#  ]
-#  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
+[[inputs.execd]]
+  command = ["estat", "metaslab-alloc", "-jm", "10"]
+  name_override = "estat_metaslab-alloc"
+  signal = "none"
+  restart_delay = "30s"
+  data_format = "json"
+  tag_keys = [
+    "name",
+    "axis"
+  ]
+  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
 
 # Collect output from "nfs_threads"
 [[inputs.execd]]
