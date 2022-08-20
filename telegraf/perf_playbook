@@ -30,14 +30,14 @@ function usage() {
 
 function enable_playbook() {
 	date
-	echo "Enabling Performance Playbook Metrics"
+	echo "Enabling Performance Playbook Metric Collection"
 	touch $PLAYBOOK_FLAG
 	systemctl restart delphix-telegraf
 }
 
 function disable_playbook() {
 	date
-	echo "Disabling Performance Playbook Metrics"
+	echo "Disabling Performance Playbook Metric Collection"
 	rm -rf $PLAYBOOK_FLAG
 	systemctl restart delphix-telegraf
 }
