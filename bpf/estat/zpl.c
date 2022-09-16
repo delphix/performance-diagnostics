@@ -11,6 +11,7 @@
 #include <sys/zfs_znode.h>
 #include <sys/dmu_objset.h>
 #include <sys/spa_impl.h>
+#include <sys/zil_impl.h>
 
 typedef struct {
 	u64 start_time;
@@ -23,10 +24,11 @@ typedef struct {
 BPF_HASH(io_info_map, u32, io_info_t);
 
 #ifndef OPTARG
-#define	POOL "domain0"
+#define        POOL "domain0"
 #else
-#define	POOL (OPTARG)
+#define        POOL (OPTARG)
 #endif
+
 #define ZFS_READ_SYNC_LENGTH 14
 #define ZFS_READ_ASYNC_LENGTH 15
 #define ZFS_WRITE_SYNC_LENGTH 15
@@ -36,35 +38,23 @@ BPF_HASH(io_info_map, u32, io_info_t);
 static inline bool
 equal_to_pool(char *str)
 {
-	char comparand[sizeof (POOL)];
-	bpf_probe_read(&comparand, sizeof (comparand), str);
-	char compare[] = POOL;
-	for (int i = 0; i < sizeof (comparand); ++i)
-		if (compare[i] != comparand[i])
-			return (false);
-	return (true);
+       char comparand[sizeof (POOL)];
+       bpf_probe_read(&comparand, sizeof (comparand), str);
+       char compare[] = POOL;
+       for (int i = 0; i < sizeof (comparand); ++i)
+               if (compare[i] != comparand[i])
+                       return (false);
+       return (true);
 }
 
 static inline int
 zfs_read_write_entry(io_info_t *info, struct znode *zn, zfs_uio_t *uio, int flags)
 {
-	// Essentially ITOZSB, but written explicitly so that BCC can insert
-	// the necessary calls to bpf_probe_read.
-	zfsvfs_t *zfsvfs = zn->z_inode.i_sb->s_fs_info;
-
-	objset_t *z_os = zfsvfs->z_os;
-	spa_t *spa = z_os->os_spa;
-
-	if (!equal_to_pool(spa->spa_name))
-		return (0);
-
 	info->start_time = bpf_ktime_get_ns();
 	info->bytes = uio->uio_resid;
-	info->is_sync =
-	    z_os->os_sync == ZFS_SYNC_ALWAYS || (flags & (O_SYNC | O_DSYNC));
+	info->is_sync = (flags & (O_SYNC | O_DSYNC));
 
 	u32 tid = bpf_get_current_pid_tgid();
-	io_info_t *infop = io_info_map.lookup(&tid);
 	io_info_map.update(&tid, info);
 
 	return (0);
@@ -88,10 +78,28 @@ zfs_write_entry(struct pt_regs *ctx, struct znode *zn, zfs_uio_t *uio, int flags
 	return (zfs_read_write_entry(&info, zn, uio, flags));
 }
 
+// @@ kprobe|zfs_log_write|zfs_log_write_entry
+int
+zfs_log_write_entry(struct pt_regs *ctx, zilog_t *zilog)
+{
+	u32 tid = bpf_get_current_pid_tgid();
+	io_info_t *info = io_info_map.lookup(&tid);
+	if (info == NULL) {
+		return (0);
+	}
+
+	if (!equal_to_pool(zilog->zl_spa->spa_name)) {
+		io_info_map.delete(&tid);
+	}
+	info->is_sync = info->is_sync || zilog->zl_os->os_sync == ZFS_SYNC_ALWAYS;
+
+	return (0);
+}
+
 // @@ kretprobe|zfs_read|zfs_read_write_exit
 // @@ kretprobe|zfs_write|zfs_read_write_exit
 int
-zfs_read_write_exit(struct pt_regs *ctx, struct znode *zn, zfs_uio_t *uio)
+zfs_read_write_exit(struct pt_regs *ctx)
 {
 	u32 tid = bpf_get_current_pid_tgid();
 	io_info_t *info = io_info_map.lookup(&tid);
@@ -110,11 +118,7 @@ zfs_read_write_exit(struct pt_regs *ctx, struct znode *zn, zfs_uio_t *uio)
 			__builtin_memcpy(name, "zfs_write async", ZFS_WRITE_ASYNC_LENGTH);
 		}
 	} else {
-		if (info->is_sync) {
-			__builtin_memcpy(name, "zfs_read sync", ZFS_READ_SYNC_LENGTH);
-		} else {
-			__builtin_memcpy(name, "zfs_read async", ZFS_READ_ASYNC_LENGTH);
-		}
+		__builtin_memcpy(name, "zfs_read", ZFS_READ_SYNC_LENGTH);
 	}
 
 	char axis = 0;
