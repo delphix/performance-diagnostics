@@ -31,7 +31,6 @@
 #define	POOL (OPTARG)
 #endif
 
-
 // Structure to hold thread local data
 typedef struct {
 	u64 ts;

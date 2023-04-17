@@ -1,0 +1,48 @@
+#######################  DOSE/zcache Metrics  ################################
+[[inputs.execd]]
+  command = ["/etc/telegraf/zcache-stats.sh"]
+  name_override = "zcache_stats"
+  signal = "none"
+  restart_delay = "30s"
+  data_format = "csv"
+  csv_skip_columns = 1
+  csv_column_names = ["cache_lookup_count","idx_access_pendch","idx_access_entry","idx_access_chunk",
+                        "idx_access_disk","cache_hits_count","cache_hits_bytes","cache_hits_ratio",
+                        "cache_insert_count","cache_insert_bytes","insert_source_read","insert_source_write",
+                        "insert_source_specr","insert_drops_buffer","insert_drops_alloc","bufbytes_used_demand",
+                        "bufbytes_used_spec","cache_other_evicts","cache_other_pending","alloc_alloc",
+                        "alloc_avail","alloc_free_space","alloc_free_slabs"]
+  csv_column_types = ["int","int","int","int","int","int","int","int","int","int","int","int","int",
+                        "int","int","int","int","int","int","int","int","int","int"]
+  csv_delimiter = "\t"
+  csv_trim_space = true
+
+
+[[inputs.execd]]
+  command = ["/etc/telegraf/zpool-iostat-o.sh"]
+  name_override = "zpool_iostat-o"
+  signal = "none"
+  restart_delay = "30s"
+  data_format = "csv"
+  csv_column_names = ["pool","agent_io_op_read","agent_io_op_write","agent_io_tput_read",
+			"agent_io_tput_write","store_data_op_get","store_data_op_put","store_data_tput_get",
+			"store_data_tput_put","store_metadata_op_get","store_metadata_op_put",
+			"store_metadata_tput_get","store_metadata_tput_put","store_reclaim_op_get",
+			"store_reclaim_op_put","store_reclaim_tput_get","store_reclaim_tput_put","object_del"]
+  csv_column_types = ["string","int","int","int","int","int","int","int","int","int","int","int","int",
+			"int","int","int","int","int"]
+  csv_tag_columns = ["pool"]
+  csv_delimiter = " "
+  csv_trim_space = true
+
+
+[[inputs.exec]]
+  interval = "1h"
+  commands = ["/usr/sbin/zcache hits --json"]
+  name_override = "zcache_hits"
+  data_format = "json"
+  json_string_fields = ["start_time"]
+
+
+# End of DOSE/zcache section
+
