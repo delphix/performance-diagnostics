@@ -55,7 +55,7 @@ disk_io_done(struct pt_regs *ctx, struct request *reqp)
 		return (0);   // missed issue
 	}
 
-	u64 delta = ts - data->ts;
+	u64 delta = (ts - data->ts) / 1000;
 	char name[NAME_LENGTH] = "";
 	char axis[AXIS_LENGTH] = "";
 
