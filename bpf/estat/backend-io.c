@@ -47,7 +47,8 @@ disk_io_start(struct pt_regs *ctx, struct request *reqp)
 int
 disk_io_done(struct pt_regs *ctx, struct request *reqp)
 {
-	u64 ts = bpf_ktime_get_ns();
+	// bpf diplays it in microsecs. so here divide by 1000 to get microsecs
+	u64 ts = bpf_ktime_get_ns() / 1000;
 	io_data_t *data = io_base_data.lookup((u64 *) &reqp);
 	struct bio *bp = reqp->bio;
 
