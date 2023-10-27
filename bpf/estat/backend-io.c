@@ -47,8 +47,7 @@ disk_io_start(struct pt_regs *ctx, struct request *reqp)
 int
 disk_io_done(struct pt_regs *ctx, struct request *reqp)
 {
-	// bpf diplays it in microsecs. so here divide by 1000 to get microsecs
-	u64 ts = bpf_ktime_get_ns() / 1000;
+	u64 ts = bpf_ktime_get_ns();
 	io_data_t *data = io_base_data.lookup((u64 *) &reqp);
 	struct bio *bp = reqp->bio;
 
@@ -56,7 +55,7 @@ disk_io_done(struct pt_regs *ctx, struct request *reqp)
 		return (0);   // missed issue
 	}
 
-	u64 delta = ts - data->ts;
+	u64 delta = (ts - data->ts) / 1000;
 	char name[NAME_LENGTH] = "";
 	char axis[AXIS_LENGTH] = "";
 
