@@ -18,7 +18,7 @@
   rotation_max_size = "50MB"
   rotation_max_archives = 9
   data_format = "json"
-  namedrop = ["*estat_*", "agg_*", "zfs", "zpool*", "zcache*"]
+  namedrop = ["*estat_*", "agg_*", "zfs", "zpool*", "zcache*", "docker*"]
 
 # Define output file for ZFS related metrics
 [[outputs.file]]

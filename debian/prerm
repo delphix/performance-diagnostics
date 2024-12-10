@@ -1,0 +1,27 @@
+#!/bin/bash
+
+USER="telegraf"
+GROUP="docker"
+
+# Ensure user and group exist
+if ! id "$USER" &>/dev/null; then
+	echo "Error: User '$USER' does not exist" >&2
+	exit 1
+fi
+
+if ! getent group "$GROUP" &>/dev/null; then
+	echo "Error: Group '$GROUP' does not exist" >&2
+	exit 1
+fi
+
+# Remove user from the group
+if groups "$USER" | grep -q "\b$GROUP\b"; then
+	if gpasswd -d "$USER" "$GROUP"; then
+		echo "User '$USER' removed from group '$GROUP'."
+	else
+		echo "Error: Failed to remove user '$USER' from group '$GROUP'" >&2
+		exit 1
+	fi
+fi
+
+exit 0
