@@ -1,0 +1,22 @@
+#######################  Docker/DCT services Metrics  ################################
+[[inputs.docker]]
+  endpoint = "unix:///var/run/docker.sock"
+  interval = "60s"
+  timeout = "10s"
+  namepass = [
+    "docker_container_cpu",
+    "docker_container_mem",
+    "docker_container_blkio",
+    "docker_container_status"
+  ]
+  docker_label_exclude = ["com.docker.compose.*"]
+
+ [[outputs.file]]
+  files = ["/var/log/telegraf/metrics_docker.json"]
+  rotation_max_size = "30MB"
+  rotation_max_archives = 5
+  data_format = "json"
+  namepass = ["docker*"]
+
+####################### End of Docker/DCT services Metrics #######################
+
