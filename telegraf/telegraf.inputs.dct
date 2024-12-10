@@ -1,0 +1,12 @@
+#######################  Docker/DCT services Metrics  ################################
+[[inputs.docker]]
+  endpoint = "unix:///var/run/docker.sock"
+  interval = "60s"
+  timeout = "10s"
+  namepass = [
+    "docker_container_cpu",
+    "docker_container_mem",
+    "docker_container_blkio",
+    "docker_container_status"
+  ]
+

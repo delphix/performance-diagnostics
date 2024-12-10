@@ -1,10 +1,16 @@
 #!/bin/bash
 BASE_CONFIG=/etc/telegraf/telegraf.base
 DOSE_INPUTS=/etc/telegraf/telegraf.inputs.dose
+DCT_INPUTS=/etc/telegraf/telegraf.inputs.dct
 PLAYBOOK_INPUTS=/etc/telegraf/telegraf.inputs.playbook
 PLAYBOOK_FLAG=/etc/telegraf/PLAYBOOK_ENABLED
 TELEGRAF_CONFIG=/etc/telegraf/telegraf.conf
 
+
+function engine_is_dct() {
+	/usr/bin/get-appliance-variant | grep -q "dct" >/dev/null
+	[[ "$?" == "0" ]]
+}
 
 function engine_is_object_based() {
 	zdb -C | grep "type: 'object_store'" >/dev/null
@@ -22,6 +28,13 @@ if engine_is_object_based; then
 		cat $PLAYBOOK_INPUTS $DOSE_INPUTS $BASE_CONFIG > $TELEGRAF_CONFIG
 	else
 		cat $DOSE_INPUTS $BASE_CONFIG > $TELEGRAF_CONFIG
+	fi
+elif engine_is_dct; then
+  usermod -aG docker telegraf
+	if playbook_is_enabled; then
+		cat $PLAYBOOK_INPUTS $DCT_INPUTS $BASE_CONFIG > $TELEGRAF_CONFIG
+	else
+		cat $DCT_INPUTS $BASE_CONFIG > $TELEGRAF_CONFIG
 	fi
 else
 	if playbook_is_enabled; then
