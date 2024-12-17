@@ -1,0 +1,27 @@
+#!/bin/bash
+
+USER="telegraf"
+GROUP="docker"
+
+# Ensure user and group exist
+if ! id "$USER" &>/dev/null; then
+	echo "Error: User '$USER' does not exist" >&2
+	exit 1
+fi
+
+if ! getent group "$GROUP" &>/dev/null; then
+	echo "Error: Group '$GROUP' does not exist" >&2
+	exit 1
+fi
+
+# Add user to the group if not already a member
+if ! groups "$USER" | grep -q "\b$GROUP\b"; then
+	if usermod -a -G "$GROUP" "$USER"; then
+		echo "User '$USER' added to group '$GROUP'."
+	else
+		echo "Error: Failed to add user '$USER' to group '$GROUP'" >&2
+		exit 1
+	fi
+fi
+
+exit 0
