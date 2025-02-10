@@ -66,7 +66,7 @@ BPF_HASH($hist.name$, io_hist_key_t, u64);
 int disk_io_start(struct pt_regs *ctx, struct request *reqp)
 {
     io_data_t data = {};
-    struct gendisk *diskp = reqp->rq_disk;
+    struct gendisk *diskp = reqp->q->disk;
     data.ts = bpf_ktime_get_ns();
     data.cmd_flags = reqp->cmd_flags;
     data.size = reqp->__data_len;
