@@ -153,7 +153,7 @@ def print_line(interval):
     if e1 or e2 or e3:
         return
 
-    while(not sleep(interval)):
+    while not sleep(interval):
         nextCpuTime, e1 = cpu_time(pids)
         nextPackets, nextEnqueued, nextWoken, e2 = pool_stats()
         nextRB, nextWB, nextRO, nextWO, nextMeta, e3 = nfs_stats()
