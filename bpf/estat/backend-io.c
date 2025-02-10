@@ -7,6 +7,7 @@
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <linux/blkdev.h>
+#include <linux/blk-mq.h>
 #include <linux/blk_types.h>
 #include <uapi/linux/bpf.h>
 
