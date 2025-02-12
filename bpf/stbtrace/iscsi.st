@@ -63,7 +63,7 @@ BPF_HASH($hist.name$, iscsi_hist_key_t, u64);
 
 // Probe functions to initialize thread local data
 int iscsi_target_start(struct pt_regs *ctx, struct iscsi_conn *conn,
-                       struct iscsi_cmd *cmd, struct iscsi_scsi_req *hdr)
+                       struct iscsit_cmd *cmd, struct iscsi_scsi_req *hdr)
 {
         u64 ts = bpf_ktime_get_ns();
         iscsi_start_ts.update((u64 *) &cmd, &ts);
@@ -72,7 +72,7 @@ int iscsi_target_start(struct pt_regs *ctx, struct iscsi_conn *conn,
 }
 
 int iscsi_target_response(struct pt_regs *ctx, struct iscsi_conn *conn,
-                          struct iscsi_cmd *cmd, int state)
+                          struct iscsit_cmd *cmd, int state)
 {
         u32 tid = bpf_get_current_pid_tgid();
         iscsi_data_t data = {};
