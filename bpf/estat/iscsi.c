@@ -25,7 +25,8 @@
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <uapi/linux/bpf.h>
-#include "target/iscsi/iscsi_target_core.h"
+#include <scsi/libiscsi.h>
+#include <target/iscsi/iscsi_target_core.h>
 
 
 // Definitions for this script
