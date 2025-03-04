@@ -24,4 +24,6 @@ if ! groups "$USER" | grep -q "\b$GROUP\b"; then
 	fi
 fi
 
+#DEBHELPER#
+
 exit 0
