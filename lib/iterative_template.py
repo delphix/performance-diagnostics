@@ -1,5 +1,5 @@
 #
-# Copyright 2019 Delphix. All rights reserved.
+# Copyright 2019, 2025 Delphix. All rights reserved.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
@@ -52,7 +52,7 @@ class IterativeTemplate:
     TOP_ITERATIVE_REGEX = r"\$(\w+)\:(\{\w+\|[^}]*})\$"
 
     #
-    # The org.stringtemplate.v4 used int he scripts requires dollars
+    # The org.stringtemplate.v4 used in the scripts requires dollars
     # signs around template variables, e.g. $var$.  The trailing
     # dollar sign is removed to work with python string templates
     # using DOUBLE_DOLLAR_REGEX.
