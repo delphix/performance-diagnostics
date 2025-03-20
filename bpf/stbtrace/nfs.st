@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2019, 2020 by Delphix. All rights reserved.
+# Copyright (c) 2019, 2025 by Delphix. All rights reserved.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
@@ -172,7 +172,7 @@ int nfsd4_write_start(struct pt_regs *ctx, struct svc_rqst *rqstp,
     nfs_data_t data = {};
     data.ts = bpf_ktime_get_ns();
     data.size = 0;
-    data.write_arg = nfs_write;
+    data.write_arg = &nfs_write->wr_buflen;
     data.sync = ASYNC_WRITE; // Assume async write, sync writes detected
     data.cached = AXIS_NOT_APPLICABLE;
     bpf_probe_read_str(&data.client, CLIENT_LEN, rqstp->rq_client->name);
@@ -292,9 +292,7 @@ int nfsd4_write_done(struct pt_regs *ctx)
         return 0;   // missed issue
     }
 
-    bpf_probe_read(&nfs_write, sizeof(nfs_write), data->write_arg);
-    data->size = nfs_write.wr_bytes_written;
-
+    bpf_probe_read(&data->size, sizeof(u32), data->write_arg);
     aggregate_data(data, ts, WRITE_STR, NFSV4_STR);
     nfs_base_data.delete(&pid);
 
