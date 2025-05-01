@@ -12,6 +12,7 @@
 #include <sys/zfs_rlock.h>
 #include <sys/spa_impl.h>
 #include <sys/dataset_kstats.h>
+#include <sys/zvol.h>
 #include <sys/zvol_impl.h>
 
 

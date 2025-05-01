@@ -25,7 +25,8 @@
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <uapi/linux/bpf.h>
-#include "target/iscsi/iscsi_target_core.h"
+#include <scsi/libiscsi.h>
+#include <target/iscsi/iscsi_target_core.h>
 
 
 // Definitions for this script
@@ -48,7 +49,7 @@ BPF_HASH(iscsi_base_data, u32, iscsi_data_t);
 // @@ kprobe|iscsit_process_scsi_cmd|iscsi_target_start
 int
 iscsi_target_start(struct pt_regs *ctx, struct iscsi_conn *conn,
-    struct iscsi_cmd *cmd, struct iscsi_scsi_req *hdr)
+    struct iscsit_cmd *cmd, struct iscsi_scsi_req *hdr)
 {
 	u64 ts = bpf_ktime_get_ns();
 	iscsi_start_ts.update((u64 *) &cmd, &ts);
@@ -75,7 +76,7 @@ aggregate_data(iscsi_data_t *data, u64 ts, char *opstr)
 
 // @@ kprobe|iscsit_response_queue|iscsi_target_response
 int
-iscsi_target_response(struct pt_regs *ctx, struct iscsi_conn *conn, struct iscsi_cmd *cmd, int state)
+iscsi_target_response(struct pt_regs *ctx, struct iscsi_conn *conn, struct iscsit_cmd *cmd, int state)
 {
 	u32 tid = bpf_get_current_pid_tgid();
 	iscsi_data_t data = {};
