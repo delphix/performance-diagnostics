@@ -7,6 +7,7 @@
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <linux/blkdev.h>
+#include <linux/blk-mq.h>
 #include <linux/blk_types.h>
 #include <uapi/linux/bpf.h>
 
@@ -34,7 +35,7 @@ int
 disk_io_start(struct pt_regs *ctx, struct request *reqp)
 {
 	io_data_t data = {};
-	struct gendisk *diskp = reqp->rq_disk;
+	struct gendisk *diskp = reqp->q->disk;
 	data.ts = bpf_ktime_get_ns();
 	data.cmd_flags = reqp->cmd_flags;
 	data.size = reqp->__data_len;

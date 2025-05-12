@@ -27,6 +27,7 @@ bpf_text += """
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <linux/blkdev.h>
+#include <linux/blk-mq.h>
 #include <linux/blk_types.h>
 #include <uapi/linux/bpf.h>
 
@@ -65,7 +66,7 @@ BPF_HASH($hist.name$, io_hist_key_t, u64);
 int disk_io_start(struct pt_regs *ctx, struct request *reqp)
 {
     io_data_t data = {};
-    struct gendisk *diskp = reqp->rq_disk;
+    struct gendisk *diskp = reqp->q->disk;
     data.ts = bpf_ktime_get_ns();
     data.cmd_flags = reqp->cmd_flags;
     data.size = reqp->__data_len;
@@ -128,7 +129,7 @@ b = BPF(text=bpf_text)
 if BPF.get_kprobe_functions(b'blk_start_request'):
     b.attach_kprobe(event="blk_start_request", fn_name="disk_io_start")
 b.attach_kprobe(event="blk_mq_start_request", fn_name="disk_io_start")
-b.attach_kprobe(event="blk_account_io_done", fn_name="disk_io_done")
+b.attach_kprobe(event="blk_mq_end_request", fn_name="disk_io_done")
 
 
 helper = BCCHelper(b, BCCHelper.ANALYTICS_PRINT_MODE)
