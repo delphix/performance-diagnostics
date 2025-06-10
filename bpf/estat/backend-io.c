@@ -30,10 +30,12 @@ typedef struct {
 
 BPF_HASH(io_base_data, u64, io_data_t);
 
-// @@ kprobe|blk_mq_start_request|disk_io_start
+// @@ raw_tracepoint|block_io_start|disk_io_start
 int
-disk_io_start(struct pt_regs *ctx, struct request *reqp)
+disk_io_start(struct bpf_raw_tracepoint_args *ctx)
 {
+	struct request *reqp = (struct request *)ctx->args[0];
+
 	io_data_t data = {};
 	struct gendisk *diskp = reqp->q->disk;
 	data.ts = bpf_ktime_get_ns();
@@ -44,10 +46,12 @@ disk_io_start(struct pt_regs *ctx, struct request *reqp)
 	return (0);
 }
 
-// @@ kprobe|blk_account_io_done|disk_io_done
+// @@ raw_tracepoint|block_io_done|disk_io_done
 int
-disk_io_done(struct pt_regs *ctx, struct request *reqp)
+disk_io_done(struct bpf_raw_tracepoint_args *ctx)
 {
+	struct request *reqp = (struct request *)ctx->args[0];
+
 	u64 ts = bpf_ktime_get_ns();
 	io_data_t *data = io_base_data.lookup((u64 *) &reqp);
 	struct bio *bp = reqp->bio;
