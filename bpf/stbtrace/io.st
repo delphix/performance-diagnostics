@@ -63,8 +63,9 @@ $hists:{hist|
 BPF_HASH($hist.name$, io_hist_key_t, u64);
 }$
 
-int disk_io_start(struct pt_regs *ctx, struct request *reqp)
+int disk_io_start(struct bpf_raw_tracepoint_args *ctx)
 {
+    struct request *reqp = (struct request *)ctx->args[0];
     io_data_t data = {};
     struct gendisk *diskp = reqp->q->disk;
     data.ts = bpf_ktime_get_ns();
@@ -101,17 +102,19 @@ static int aggregate_data(io_data_t *data, u64 ts, char *opstr)
     return 0;
 }
 
-int disk_io_done(struct pt_regs *ctx, struct request *reqp)
+int disk_io_done(struct bpf_raw_tracepoint_args *ctx)
 {
+    struct request *reqp = (struct request *)ctx->args[0];
+
     u64 ts = bpf_ktime_get_ns();
     io_data_t *data = io_base_data.lookup((u64 *) &reqp);
-    struct bio *bp = reqp->bio;
+    struct bio *bp = (struct bio *)reqp->bio;
 
     if (data == 0) {
         return 0;   // missed issue
     }
 
-    data->err = (bp->bi_status == BLK_STS_OK) ? 0 : 1;
+    data->err = (bp != NULL && bp->bi_status == BLK_STS_OK) ? 0 : 1;
 
     // Perform aggregations
     if ((data->cmd_flags & REQ_OP_MASK) == REQ_OP_WRITE) {
@@ -125,11 +128,8 @@ int disk_io_done(struct pt_regs *ctx, struct request *reqp)
 }
 """  # noqa: W293
 b = BPF(text=bpf_text)
-
-if BPF.get_kprobe_functions(b'blk_start_request'):
-    b.attach_kprobe(event="blk_start_request", fn_name="disk_io_start")
-b.attach_kprobe(event="blk_mq_start_request", fn_name="disk_io_start")
-b.attach_kprobe(event="blk_mq_end_request", fn_name="disk_io_done")
+b.attach_raw_tracepoint("block_io_start", fn_name="disk_io_start")
+b.attach_raw_tracepoint("block_io_done", fn_name="disk_io_done")
 
 
 helper = BCCHelper(b, BCCHelper.ANALYTICS_PRINT_MODE)
