@@ -440,6 +440,8 @@ for line in input_text.splitlines():
             else:
                 print("WARNING: {}: {} - not found"
                       .format(probe_type, probe_spec[1]))
+        elif probe_type == "raw_tracepoint":
+            b.attach_raw_tracepoint(probe_spec[1], fn_name=probe_spec[2])
         elif probe_type == "kretprobe":
             b.attach_kretprobe(event=probe_spec[1], fn_name=probe_spec[2],
                                maxactive=MAXACTIVE)
