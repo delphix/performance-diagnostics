@@ -11,7 +11,7 @@ import time
 # an output line.
 active_cmd_threshold = 5
 
-interval = 30
+interval = 5
 jmxtool = "/opt/delphix/server/bin/jmxtool"
 disp_lock = threading.Lock()
 aggr_lock = threading.Lock()
@@ -342,72 +342,73 @@ def dsp_client(nexus, aggr=False):  # noqa: C901
 
         return
 
-    def print_aggr_header():
-        print('{:^95} {:^100}'.format('Client', 'Server'))
-        print('{:>95}{:>5}'.format('| Throughput KB/sec|', '  |  '))
-        print(
-            '{:<25}{:<15}{:<10}{:<10}{:<15}{:<10}{:<10}{:>5}{:>10}{:>10}{:>15}{:>15}{:>15}'.format(
-                'Date/Time', 'TAG', 'Queue', 'IOPS', 'Network (us)', '| Raw',
-                'Compress |', '  |  ', 'Queue', 'IOPS', 'Execute (us)',
-                'Pending (us)', 'Service (us)'))
+def print_aggr_header():
+    print('{:^95} {:^100}'.format('Client', 'Server'))
+    print('{:>95}{:>5}'.format('| Throughput KB/sec|', '  |  '))
+    print(
+        '{:<25}{:<15}{:<10}{:<10}{:<15}{:<10}{:<10}{:>5}{:>10}{:>10}{:>15}{:>15}{:>15}'.format(
+        'Date/Time', 'TAG', 'Queue', 'IOPS', 'Network (us)', '| Raw',
+        'Compress |', '  |  ', 'Queue', 'IOPS', 'Execute (us)',
+        'Pending (us)', 'Service (us)'))
 
-    def start_single(nexus, aggr):
-        # Create dameon threads to pull client and server side DSP stats
-        #   use daemon threads so that sys.exit() upon interrupt doesn't try to join on the threads and hang
-        ct = threading.Thread(target=dsp_client, args=(nexus, aggr,))
-        time.sleep(1)
-        st = threading.Thread(target=dsp_server, args=(nexus, aggr,))
-        ct.daemon = True
-        st.daemon = True
+def start_single(nexus, aggr):
+    # Create dameon threads to pull client and server side DSP stats.
+    # Use daemon threads so that sys.exit() upon interrupt doesn't try to
+    # join on the threads and hang.
+    ct = threading.Thread(target=dsp_client, args=(nexus, aggr,))
+    time.sleep(1)
+    st = threading.Thread(target=dsp_server, args=(nexus, aggr,))
+    ct.daemon = True
+    st.daemon = True
 
-        # Start both threads
+    # Start both threads
 
-        ct.start()
-        st.start()
-        return
+    ct.start()
+    st.start()
+    return
 
-    def start_aggr(nexus_list):
-        for nexus in nexus_list:
-            start_single(nexus, True)
-            time.sleep(5)
+def start_aggr(nexus_list):
+    for nexus in nexus_list:
+        start_single(nexus, True)
+        time.sleep(5)
 
-        if (len(nexus_list) > 1):
-            at = threading.Thread(target=aggr_thread, args=(None,))
-            at.daemon = True
-            at.start()
+    if (len(nexus_list) > 1):
+        at = threading.Thread(target=aggr_thread, args=(None,))
+        at.daemon = True
+        at.start()
 
-        return
+    return
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--aggr', action='store_true',
+parser = argparse.ArgumentParser()
+parser.add_argument('--aggr', action='store_true',
                         help='aggregate display')
-    args = parser.parse_args()
+args = parser.parse_args()
 
-    # Validate commandline provided nexus, or prompt user from existing nexus
-    nexus = getnexus()
+# Validate commandline provided nexus, or prompt user from existing nexus
+nexus = getnexus()
 
-    if (nexus is None):
-        print("No Nexus Found.")
-        sys.exit(0)
-
-    # Single Nexus
-    #   print nexus status
-    #   if aggregate option then print aggregate output one line per iteration
-    #   else print the nexus detailed output (old dsp.py behavior)
-    # MultiNexus
-    #   Always display in aggregate form
-    if (len(nexus) == 1):
-        printnexus(nexus[0])
-        if args.aggr:
-            print_aggr_header()
-        start_single(nexus[0], args.aggr)
-    else:
-        print("MultiNexus:")
-        for n in nexus:
-            print("\t" + n)
-        print_aggr_header()
-        start_aggr(nexus)
-
-    while True:
-        time.sleep(60)
+if (nexus is None):
+    print("No Nexus Found.")
     sys.exit(0)
+
+# Single Nexus
+#   print nexus status
+#   if aggregate option then print aggregate output one line per iteration
+#   else print the nexus detailed output (old dsp.py behavior)
+# MultiNexus
+#   Always display in aggregate form
+if (len(nexus) == 1):
+    printnexus(nexus[0])
+    if args.aggr:
+        print_aggr_header()
+    start_single(nexus[0], args.aggr)
+else:
+    print("MultiNexus:")
+    for n in nexus:
+        print("\t" + n)
+    print_aggr_header()
+    start_aggr(nexus)
+
+while True:
+    time.sleep(60)
+sys.exit(0)
