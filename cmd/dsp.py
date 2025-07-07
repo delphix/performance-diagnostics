@@ -5,92 +5,99 @@ import threading
 import subprocess
 import sys
 import time
-import io
 
 # active_cmd_threshold is used to filter out nexus that are mostly idle.
-#   Its the number of commands that must complete in an interval to display
-#   an output line.
+# It's the number of commands that must complete in an interval to display
+# an output line.
 active_cmd_threshold = 5
 
 interval = 30
-jmxtool="/opt/delphix/server/bin/jmxtool"
-disp_lock=threading.Lock()
-aggr_lock=threading.Lock()
-aggr_data={'raw_tput':0,'compress_tput':0,'count':0}
+jmxtool = "/opt/delphix/server/bin/jmxtool"
+disp_lock = threading.Lock()
+aggr_lock = threading.Lock()
+aggr_data = {'raw_tput': 0, 'compress_tput': 0, 'count': 0}
 
-NS_TO_US=1000
+NS_TO_US = 1000
 
 #
 # dsp.py
-# 
-# dsp.py is a script for monitoring the performance of Delphix workflows that leverage DSP(Delphix Session Protocol).
-# Currently, as of 5.1, Replication, SnapSync, V2P(export), UEM, all leverage DSP.  This script leverages the raw
-# stats provided by the various 'jmxtool dsp <command>' commands to extrace and parse the relevant statistics.  The
-# script can be invoked as follows:
+#
+# dsp.py is a script for monitoring the performance of Delphix workflows that
+# leverage DSP(Delphix Session Protocol).
+# Currently, as of 5.1, Replication, SnapSync, V2P(export), UEM, all leverage
+# DSP. This script leverages the raw stats provided by the various
+# 'jmxtool dsp <command>' commands to extrace and parse the relevant
+# statistics.
+# The script can be invoked as follows:
 #
 # ./dsp.py [nexus id]
 #
-# Without the optional [nexus id], dsp.py will list all the available nexi and allow a user selection.  
+# Without the optional [nexus id], dsp.py will list all the available nexi
+# and allow a user selection.
 
 #
-# Note: As of Delphix 5.1, the replication workflow leverages the DataMover service.  Previously a single nexus
-# was used for both control and data streams.  In 5.1, there are two separate nexi, with the DataMover representing
-# the 'data' portion.  This nexus should be chosen when trying to identify performance bottlenecks in the data
-# transfer phase.  
+# Note: As of Delphix 5.1, the replication workflow leverages the DataMover
+# service. Previously a single nexus was used for both control and data
+# streams. In 5.1, there are two separate nexi, with the DataMover representing
+# the 'data' portion.
+# This nexus should be chosen when trying to identify performance
+# bottlenecks in the data transfer phase.
 #
 
 #
 # getnexus() - parse arg(if supplied) and validate user selection of nexus
 #
+
+
 def getnexus():
-        menu = {}
-        nexus = None
-        cnt=0
+    menu = {}
+    nexus = None
+    cnt = 0
 
-        # check if user specified nexus on command line
-        if (len(sys.argv) > 1):
-                nexus=sys.argv[1]
+    # check if user specified nexus on command line
+    if (len(sys.argv) > 1):
+        nexus = sys.argv[1]
 
-        # get a list of client and server nexi that are currently active
-        # XXX - change this to jmxtool list-clients, server-clients
-        # python2 doesn't support text option to popen but python3 needs text to return output as a str as opposed to bytes
-        try:
-            stri_c = subprocess.Popen([jmxtool, 'dsp', 'list-clients'], stdout=subprocess.PIPE,text=True).communicate()[0].splitlines()
-        except:
-            stri_c = subprocess.Popen([jmxtool, 'dsp', 'list-clients'], stdout=subprocess.PIPE).communicate()[0].splitlines()
+    # get a list of client and server nexi that are currently active
+    # XXX - change this to jmxtool list-clients, server-clients
+    # python2 doesn't support text option to popen but python3 needs text to return output as a str as opposed to bytes
+    try:
+        stri_c = subprocess.Popen([jmxtool, 'dsp', 'list-clients'], stdout=subprocess.PIPE, text=True).communicate()[0].splitlines()
+    except:
+        stri_c = subprocess.Popen([jmxtool, 'dsp', 'list-clients'], stdout=subprocess.PIPE).communicate()[0].splitlines()
 
-        # python2 doesn't support text option to popen but python3 needs text to return output as a str as opposed to bytes
-        try:
-            stri_s = subprocess.Popen([jmxtool, 'dsp', 'server-clients'], stdout=subprocess.PIPE,text=True).communicate()[0].splitlines()
-        except:
-            stri_s = subprocess.Popen([jmxtool, 'dsp', 'server-clients'], stdout=subprocess.PIPE).communicate()[0].splitlines()
+    # python2 doesn't support text option to popen but python3 needs text to return output as a str as opposed to bytes
+    try:
+        stri_s = subprocess.Popen([jmxtool, 'dsp', 'server-clients'], stdout=subprocess.PIPE, text=True).communicate()[0].splitlines()
+    except:
+        stri_s = subprocess.Popen([jmxtool, 'dsp', 'server-clients'], stdout=subprocess.PIPE).communicate()[0].splitlines()
 
-        for line in stri_c + stri_s:
-                item=str(line)
-                menu[item]=[item]
-                if ('Replication' in item):
-                    repl_id=item.rsplit('-',1)[1]
-                    try:
-                        menu[repl_id].append(item)
-                    except:
-                        menu[repl_id]=[item]
+    for line in stri_c + stri_s:
+        item=str(line)
+        menu[item]=[item]
+        if ('Replication' in item):
+            repl_id=item.rsplit('-',1)[1]
+            try:
+                menu[repl_id].append(item)
+            except:
+                menu[repl_id]=[item]
 
-        if (len(menu) == 0):
-            return(None)
+    if (len(menu) == 0):
+        return(None)
 
-        # verify supplied nexus exists
-        if (nexus is not None) and (nexus in menu):
-                return(menu[nexus])
+    # verify supplied nexus exists
+    if (nexus is not None) and (nexus in menu):
+        return(menu[nexus])
 
-        # display menu for user to select nexus
-        # XXX - change this to include the IP address or some other defining characteristic
-        key_list=list(menu)
-        for line in key_list:
-                print(str(cnt) + " :  " + line)
-                cnt = cnt + 1
-        option = input("Select Nexus >")
+    # display menu for user to select nexus
+    # TODO - change this to include the IP address or some other defining characteristic
+    key_list=list(menu)
+    for line in key_list:
+        print(str(cnt) + " :  " + line)
+        cnt = cnt + 1
+    option = input("Select Nexus >")
 
-        return(menu[key_list[int(option)]])
+    return(menu[key_list[int(option)]])
 
 def printnexus(nexus):
     # python2 doesn't support text option to popen but python3 needs text to return output as a str as opposed to bytes
