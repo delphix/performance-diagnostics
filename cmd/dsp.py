@@ -342,14 +342,16 @@ def dsp_client(nexus, aggr=False):  # noqa: C901
 
         return
 
+
 def print_aggr_header():
     print('{:^95} {:^100}'.format('Client', 'Server'))
     print('{:>95}{:>5}'.format('| Throughput KB/sec|', '  |  '))
     print(
         '{:<25}{:<15}{:<10}{:<10}{:<15}{:<10}{:<10}{:>5}{:>10}{:>10}{:>15}{:>15}{:>15}'.format(
-        'Date/Time', 'TAG', 'Queue', 'IOPS', 'Network (us)', '| Raw',
-        'Compress |', '  |  ', 'Queue', 'IOPS', 'Execute (us)',
-        'Pending (us)', 'Service (us)'))
+            'Date/Time', 'TAG', 'Queue', 'IOPS', 'Network (us)', '| Raw',
+            'Compress |', '  |  ', 'Queue', 'IOPS', 'Execute (us)',
+            'Pending (us)', 'Service (us)'))
+
 
 def start_single(nexus, aggr):
     # Create dameon threads to pull client and server side DSP stats.
@@ -367,6 +369,7 @@ def start_single(nexus, aggr):
     st.start()
     return
 
+
 def start_aggr(nexus_list):
     for nexus in nexus_list:
         start_single(nexus, True)
@@ -379,9 +382,10 @@ def start_aggr(nexus_list):
 
     return
 
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--aggr', action='store_true',
-                        help='aggregate display')
+                    help='aggregate display')
 args = parser.parse_args()
 
 # Validate commandline provided nexus, or prompt user from existing nexus
