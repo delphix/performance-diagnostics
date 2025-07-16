@@ -11,7 +11,6 @@ import time
 # an output line.
 active_cmd_threshold = 5
 
-interval = 5
 jmxtool = "/opt/delphix/server/bin/jmxtool"
 disp_lock = threading.Lock()
 aggr_lock = threading.Lock()
@@ -83,7 +82,8 @@ def getnexus():
         return (menu[nexus])
 
     # display menu for user to select nexus
-    # TODO - change this to include the IP address or some other defining characteristic
+    # TODO - change this to include the IP address or some other
+    # TODO - defining characteristic
     key_list = list(menu)
     for line in key_list:
         print(str(cnt) + " :  " + line)
@@ -102,7 +102,7 @@ def printnexus(nexus):
 
 
 def aggr_thread(tbd):
-    global aggr_data
+    global aggr_data  # noqa: F824
     while True:
         time.sleep(2 * interval)
         aggr_lock.acquire()
@@ -124,18 +124,20 @@ def aggr_thread(tbd):
 
 
 def dsp_server(nexus, aggr=False):
-    global NS_TO_US
+    global NS_TO_US  # noqa: F824
     dict = {}
     prev_dict = {}
 
     # determine which side of the connection is the DSP server
     # replication - replication target DE (show-peer-stats)
     # snapsync    - DE (show-stats)
-    # export(V2P) - DE (show-peer-stats) - the target host is the DSP client but receives data as the server
+    # export(V2P) - DE (show-peer-stats) - the target host is the DSP client
+    #                                      but receives data as the server
     #               DE acts as the DSP client but sends data as a client.
     # XXX - add support for Connector and Grid
     if (nexus.count('Replication')) | (nexus.count('DataMover')):
-        # if this is the replication source(dsp client) then use show-peer-stats
+        # if this is the replication source(dsp client) then
+        # use show-peer-stats
         if (nexus.count('nexus-c')):
             stat_name = 'show-peer-stats'
         else:
@@ -186,7 +188,8 @@ def dsp_server(nexus, aggr=False):
 
             if aggr:
                 print(
-                    '{:<25} {:<15} {:>60} {:>10} {:>10} {:>15} {:>15} {:>15}'.format(
+                    '{:<25} {:<15} {:>60} {:>10} {:>10} {:>15} {:>15} '
+                    '{:>15}'.format(
                         my_time, tag_uuid, '  |  ', dsp_avg_queue, iops,
                         execute_time, pending_time, service_time))
             else:
@@ -195,7 +198,9 @@ def dsp_server(nexus, aggr=False):
                           .format(my_time,
                                   'DSP Server(target host side)'))
                 else:
-                    print('{0:>65} :: {1}'.format(my_time, 'DSP Server'))
+                    print('{0:>65} :: {1}'.format(my_time,
+                                                  'DSP Server'))
+
                 print('{0:>65} : {1} us'.format('Average complete time',
                                                 complete_time))
                 print('{0:>65} : {1} us'.format('Average dispatch time',
@@ -209,7 +214,8 @@ def dsp_server(nexus, aggr=False):
                 print('{0:>65} : {1} us'.format('Average service time',
                                                 service_time))
                 print(
-                    '{0:>65} : {1}'.format('Average DSP queue', dsp_avg_queue))
+                    '{0:>65} : {1}'.format('Average DSP queue',
+                                           dsp_avg_queue))
                 print('{0:>65} : {1}'.format('IOPS', iops))
                 print('\n')
             disp_lock.release()
@@ -224,8 +230,8 @@ def dsp_server(nexus, aggr=False):
 # dsp_client() - dump dsp server side statistics for given nexus
 #
 def dsp_client(nexus, aggr=False):  # noqa: C901
-    global NS_TO_US
-    global aggr_data
+    global NS_TO_US  # noqa: F824
+    global aggr_data  # noqa: F824
     dict = {}
     prev_dict = {}
 
@@ -233,10 +239,11 @@ def dsp_client(nexus, aggr=False):  # noqa: C901
     # replication - Replication Source DE (show-stats)
     # snapsync    - Source Host (show-peer-stats)
     # export(V2P) - Target Host (show-peer-stats)
-    # since script could be run on replication source or target check nexus for client or server
-    # XXX - add support for Connector and Grid
+    # since script could be run on replication source or target check nexus
+    # for client or server
     if (nexus.count('Replication')) | (nexus.count('DataMover')):
-        # if this is the replication target(dsp server) then use show-peer-stats
+        # if this is the replication target(dsp server) then
+        # use show-peer-stats
         if (nexus.count('nexus-s')):
             stat_name = 'show-peer-stats'
         else:
@@ -328,8 +335,9 @@ def dsp_client(nexus, aggr=False):  # noqa: C901
             aggr_data['count'] += 1
             aggr_lock.release()
         else:
-            # print idle nexus for the client nexus only to prevent redundant messages - if the client didn't
-            # complete any commands then the server shouldn't have completed any either.
+            # print idle nexus for the client nexus only to prevent
+            # messages - if the client didn't complete any commands then
+            # the server shouldn't have completed any either.
             print(nexus,
                   ' : Idle Nexus : Active Command Threshold is ',
                   str(active_cmd_threshold),
@@ -337,19 +345,20 @@ def dsp_client(nexus, aggr=False):  # noqa: C901
                   str(cmds),
                   ' command(s) completed in the last interval.')
 
-            prev_dict = dict.copy()
-            time.sleep(interval)
+        prev_dict = dict.copy()
+        time.sleep(interval)
 
-        return
+    return
 
 
 def print_aggr_header():
     print('{:^95} {:^100}'.format('Client', 'Server'))
     print('{:>95}{:>5}'.format('| Throughput KB/sec|', '  |  '))
     print(
-        '{:<25}{:<15}{:<10}{:<10}{:<15}{:<10}{:<10}{:>5}{:>10}{:>10}{:>15}{:>15}{:>15}'.format(
-            'Date/Time', 'TAG', 'Queue', 'IOPS', 'Network (us)', '| Raw',
-            'Compress |', '  |  ', 'Queue', 'IOPS', 'Execute (us)',
+        '{:<25}{:<15}{:<10}{:<10}{:<15}{:<10}{:<10}{:>5}'
+        '{:>10}{:>10}{:>15}{:>15}{:>15}'.format(
+            'Date/Time', 'TAG', 'Queue', 'IOPS', 'Network (us)',
+            '| Raw', 'Compress |', '  |  ', 'Queue', 'IOPS', 'Execute (us)',
             'Pending (us)', 'Service (us)'))
 
 
@@ -386,7 +395,11 @@ def start_aggr(nexus_list):
 parser = argparse.ArgumentParser()
 parser.add_argument('--aggr', action='store_true',
                     help='aggregate display')
+parser.add_argument('--interval', type=int, default=5,
+                    help='interval in seconds between updates (default: 5)')
 args = parser.parse_args()
+
+interval = args.interval
 
 # Validate commandline provided nexus, or prompt user from existing nexus
 nexus = getnexus()
@@ -415,4 +428,5 @@ else:
 
 while True:
     time.sleep(60)
+
 sys.exit(0)
