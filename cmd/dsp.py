@@ -72,7 +72,10 @@ def getnexus():
         menu[item] = [item]
         if ('Replication' in item):
             repl_id = item.rsplit('-', 1)[1]
-            menu[repl_id].append(item)
+            try:
+                menu[repl_id].append(item)
+            except KeyError:
+                menu[repl_id] = [item]
 
     if (len(menu) == 0):
         return (None)
