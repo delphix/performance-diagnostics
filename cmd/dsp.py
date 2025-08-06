@@ -10,6 +10,7 @@ import time
 # It's the number of commands that must complete in an interval to display
 # an output line.
 active_cmd_threshold = 5
+min_interval = 30
 
 jmxtool = "/opt/delphix/server/bin/jmxtool"
 disp_lock = threading.Lock()
@@ -398,11 +399,15 @@ def start_aggr(nexus_list):
 parser = argparse.ArgumentParser()
 parser.add_argument('--aggr', action='store_true',
                     help='aggregate display')
-parser.add_argument('--interval', type=int, default=30,
+parser.add_argument('--interval', type=int, default=min_interval,
                     help='interval in seconds between updates (default: 30)')
 args = parser.parse_args()
 
 interval = args.interval
+if interval < min_interval:
+    print("Error: --interval must be at least {min_interval} seconds."
+          .format(min_interval=min_interval))
+    sys.exit(1)
 
 # Validate commandline provided nexus, or prompt user from existing nexus
 nexus = getnexus()
