@@ -23,10 +23,16 @@ from bcchelper import BCCHelper   # noqa: E402
 # BPF txg program
 bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
 bpf_text += """
+
+struct bpf_wq {
+	__u64 __opaque[2];
+} __attribute__((aligned(8)));
+
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <uapi/linux/bpf.h>
 #include <linux/sunrpc/svc.h>
+#include <linux/nfs4.h>
 
 
 // nfsd4 definitions from fs/nfsd/xdr4.h
@@ -35,45 +41,43 @@ bpf_text += """
 #define bool int
 
 typedef struct {
-    u32             cl_boot;
-    u32             cl_id;
+	u32		cl_boot;
+	u32		cl_id;
 } clientid_t;
 
 typedef struct {
-    clientid_t      so_clid;
-    u32             so_id;
+	clientid_t	so_clid;
+	u32		so_id;
 } stateid_opaque_t;
 
 typedef struct {
-    u32                     si_generation;
-    stateid_opaque_t        si_opaque;
+	u32			si_generation;
+	stateid_opaque_t	si_opaque;
 } stateid_t;
 
-typedef struct {
-    stateid_t       rd_stateid;     /* request */
-    u64		    rd_offset;      /* request */
-    u32             rd_length;      /* request */
-    int             rd_vlen;
-    struct file     *rd_filp;
-    bool            rd_tmp_file;
-    void            *rd_rqstp;      /* response */
-    void            *rd_fhp;        /* response */
-} nfsd4_read;
+struct nfsd4_read {
+        stateid_t               rd_stateid;         /* request */
+        u64                     rd_offset;          /* request */
+        u32                     rd_length;          /* request */
+        int                     rd_vlen;
+        struct nfsd_file        *rd_nf;
 
-#define NFS4_VERIFIER_SIZE      8
-typedef struct { char data[NFS4_VERIFIER_SIZE]; } nfs4_verifier;
+        struct svc_rqst         *rd_rqstp;          /* response */
+        struct svc_fh           *rd_fhp;            /* response */
+        u32                     rd_eof;             /* response */
+};
 
-typedef struct {
-    stateid_t       wr_stateid;         /* request */
-    u64             wr_offset;          /* request */
-    u32             wr_stable_how;      /* request */
-    u32             wr_buflen;          /* request */
-    struct kvec     wr_head;
-    struct page **  wr_pagelist;        /* request */
-    u32             wr_bytes_written;   /* response */
-    u32             wr_how_written;     /* response */
-    nfs4_verifier   wr_verifier;        /* response */
-} nfsd4_write;
+struct nfsd4_write {
+        stateid_t       wr_stateid;         /* request */
+        u64             wr_offset;          /* request */
+        u32             wr_stable_how;      /* request */
+        u32             wr_buflen;          /* request */
+        struct xdr_buf  wr_payload;         /* request */
+
+        u32             wr_bytes_written;   /* response */
+        u32             wr_how_written;     /* response */
+        nfs4_verifier   wr_verifier;        /* response */
+};
 
 // Definitions for this script
 #define READ_STR "read"
@@ -151,7 +155,7 @@ int nfsd3_write_start(struct pt_regs *ctx, struct svc_rqst *rqstp, void *fhp,
 }
 
 int nfsd4_read_start(struct pt_regs *ctx, struct svc_rqst *rqstp, void *cstate,
-    nfsd4_read *nfs_read)
+    struct nfsd4_read *nfs_read)
 {
     u32 pid = bpf_get_current_pid_tgid();
     nfs_data_t data = {};
@@ -166,7 +170,7 @@ int nfsd4_read_start(struct pt_regs *ctx, struct svc_rqst *rqstp, void *cstate,
 }
 
 int nfsd4_write_start(struct pt_regs *ctx, struct svc_rqst *rqstp,
-    void *cstate, nfsd4_write *nfs_write)
+    void *cstate, struct nfsd4_write *nfs_write)
 {
     u32 pid = bpf_get_current_pid_tgid();
     nfs_data_t data = {};
@@ -286,7 +290,7 @@ int nfsd4_write_done(struct pt_regs *ctx)
     u64 ts = bpf_ktime_get_ns();
     u32 pid = bpf_get_current_pid_tgid();
     nfs_data_t *data = nfs_base_data.lookup(&pid);
-    nfsd4_write nfs_write;
+    struct nfsd4_write nfs_write;
 
     if (data == 0) {
         return 0;   // missed issue
