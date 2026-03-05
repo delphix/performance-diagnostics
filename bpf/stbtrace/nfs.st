@@ -24,10 +24,6 @@ from bcchelper import BCCHelper   # noqa: E402
 bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
 bpf_text += """
 
-struct bpf_wq {
-	__u64 __opaque[2];
-} __attribute__((aligned(8)));
-
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <uapi/linux/bpf.h>
@@ -41,42 +37,42 @@ struct bpf_wq {
 #define bool int
 
 typedef struct {
-	u32		cl_boot;
-	u32		cl_id;
+    u32		cl_boot;
+    u32		cl_id;
 } clientid_t;
 
 typedef struct {
-	clientid_t	so_clid;
-	u32		so_id;
+    clientid_t	so_clid;
+    u32		so_id;
 } stateid_opaque_t;
 
 typedef struct {
-	u32			si_generation;
-	stateid_opaque_t	si_opaque;
+    u32			si_generation;
+    stateid_opaque_t	si_opaque;
 } stateid_t;
 
 struct nfsd4_read {
-        stateid_t               rd_stateid;         /* request */
-        u64                     rd_offset;          /* request */
-        u32                     rd_length;          /* request */
-        int                     rd_vlen;
-        struct nfsd_file        *rd_nf;
+    stateid_t               rd_stateid;         /* request */
+    u64                     rd_offset;          /* request */
+    u32                     rd_length;          /* request */
+    int                     rd_vlen;
+    struct nfsd_file        *rd_nf;
 
-        struct svc_rqst         *rd_rqstp;          /* response */
-        struct svc_fh           *rd_fhp;            /* response */
-        u32                     rd_eof;             /* response */
+    struct svc_rqst         *rd_rqstp;          /* response */
+    struct svc_fh           *rd_fhp;            /* response */
+    u32                     rd_eof;             /* response */
 };
 
 struct nfsd4_write {
-        stateid_t       wr_stateid;         /* request */
-        u64             wr_offset;          /* request */
-        u32             wr_stable_how;      /* request */
-        u32             wr_buflen;          /* request */
-        struct xdr_buf  wr_payload;         /* request */
+    stateid_t       wr_stateid;         /* request */
+    u64             wr_offset;          /* request */
+    u32             wr_stable_how;      /* request */
+    u32             wr_buflen;          /* request */
+    struct xdr_buf  wr_payload;         /* request */
 
-        u32             wr_bytes_written;   /* response */
-        u32             wr_how_written;     /* response */
-        nfs4_verifier   wr_verifier;        /* response */
+    u32             wr_bytes_written;   /* response */
+    u32             wr_how_written;     /* response */
+    nfs4_verifier   wr_verifier;        /* response */
 };
 
 // Definitions for this script

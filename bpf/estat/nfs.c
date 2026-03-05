@@ -4,10 +4,6 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-struct bpf_wq {
-	__u64 __opaque[2];
-} __attribute__((aligned(8)));
-
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <uapi/linux/bpf.h>
