@@ -27,6 +27,7 @@ bpf_text += """
 #include <linux/bpf_common.h>
 #include <uapi/linux/bpf.h>
 
+struct iscsi_conn;
 #include "target/iscsi/iscsi_target_core.h"
 
 
