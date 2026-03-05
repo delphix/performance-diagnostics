@@ -270,6 +270,8 @@ flags = ["-include",
          "-I/usr/src/zfs-" + KVER + "/include/",
          "-I/usr/src/zfs-" + KVER + "/include/spl/",
          "-I/usr/src/zfs-" + KVER + "/include/linux",
+         "-D__KERNEL__",
+         "-D_KERNEL",
          "-DNCOUNT_INDEX=" + str(len(ArcCountIndex)),
          "-DNAVERAGE_INDEX=" + str(len(ArcLatencyIndex))] \
          + ArcCountIndex.getCDefinitions() \
