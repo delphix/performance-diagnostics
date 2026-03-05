@@ -110,8 +110,10 @@ help_msg += """
   estat zil [POOL]
       Provides a breakdown of time spent doing ZIL-related activities, in
       particular the time spent allocating a block and time spent waiting for
-      the write I/O to complete. If POOL is not specified, defaults to tracing
-      the pool 'domain0'.
+      the write I/O to complete.
+      -h          show txg help message and exit
+      -c INTERVAL set the collection interval in seconds
+      -p POOL     set the pool to monitor (default: domain0)
 """
 
 
@@ -406,7 +408,9 @@ cflags = ["-include",
           "-include",
           "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
           "-I/usr/src/zfs-" + KVER + "/include/",
-          "-I/usr/src/zfs-" + KVER + "/include/spl"]
+          "-I/usr/src/zfs-" + KVER + "/include/spl",
+          "-D__KERNEL__",
+          "-D_KERNEL"]
 if script_arg:
     cflags.append("-DOPTARG=\"" + script_arg + "\"")
 

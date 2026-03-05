@@ -24,10 +24,6 @@ from bcchelper import BCCHelper   # noqa: E402
 bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
 bpf_text += """
 
-struct bpf_wq {
-	__u64 __opaque[2];
-} __attribute__((aligned(8)));
-
 #include <uapi/linux/ptrace.h>
 #include <linux/bpf_common.h>
 #include <uapi/linux/bpf.h>

@@ -349,7 +349,8 @@ b = BPF(text=bpf_text,
                 "-I/usr/src/zfs-" + KVER + "/include/",
                 "-I/usr/src/zfs-" + KVER + "/include/spl",
                 "-I/usr/src/zfs-" + KVER + "/include/",
-                "-I/usr/src/zfs-" + KVER + "/include/linux"])
+                "-I/usr/src/zfs-" + KVER + "/include/linux",
+                "-D__KERNEL__", "-D_KERNEL"])
 
 b.attach_kprobe(event="spa_sync", fn_name="spa_sync_entry")
 b.attach_kretprobe(event="spa_sync", fn_name="spa_sync_return")
