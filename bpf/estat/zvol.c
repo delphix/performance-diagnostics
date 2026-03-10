@@ -40,12 +40,6 @@ typedef struct {
 	zvol_state_t *zv;
 } zvol_data_t;
 
-typedef struct zv_request {
-	zvol_state_t	*zv;
-	struct bio	*bio;
-} zv_request_t;
-
-
 BPF_HASH(zvol_base_data, u32, zvol_data_t);
 
 static inline bool equal_to_pool(char *str)
