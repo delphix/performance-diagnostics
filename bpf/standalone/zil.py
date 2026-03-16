@@ -48,7 +48,7 @@ parser = argparse.ArgumentParser(
         description='Collect zil latency statistics.',
         usage='estat zil [options]')
 parser.add_argument('-c', '--coll', type=int, action='store',
-                    dest='collection_sec',
+                    dest='collection_sec', default=60,
                     help='The collection interval in seconds')
 parser.add_argument('-p', '--pool', type=str, action='store',
                     dest='pool',
@@ -286,18 +286,6 @@ int zio_alloc_zil_return(struct pt_regs *cts)
     return 0;
 }
 
-int zil_commit_waiter_skip_entry(struct pt_regs *cts)
-{
-    u32 tid = bpf_get_current_pid_tgid();
-    zil_tid_info_t *info = zil_info_map.lookup(&tid);
-    if (info == NULL) {
-        return 0;
-    }
-
-    count_call("waiter skip");
-    return 0;
-}
-
 int zil_commit_writer_stall_entry(struct pt_regs *cts)
 {
     u32 tid = bpf_get_current_pid_tgid();
@@ -319,7 +307,8 @@ b = BPF(text=bpf_text,
                 "-include",
                 "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
                 "-I/usr/src/zfs-" + KVER + "/include/",
-                "-I/usr/src/zfs-" + KVER + "/include/spl"])
+                "-I/usr/src/zfs-" + KVER + "/include/spl",
+                "-D__KERNEL__", "-D_KERNEL"])
 
 b.attach_kprobe(event="zfs_write", fn_name="zfs_write_entry")
 b.attach_kretprobe(event="zfs_write", fn_name="zfs_write_return")
@@ -337,8 +326,6 @@ b.attach_kretprobe(event="zil_commit_waiter",
                    fn_name="zil_commit_waiter_return")
 b.attach_kretprobe(event="zio_alloc_zil",
                    fn_name="zio_alloc_zil_return")
-b.attach_kprobe(event="zil_commit_waiter_skip",
-                fn_name="zil_commit_waiter_skip_entry")
 b.attach_kprobe(event="zil_commit_writer_stall",
                 fn_name="zil_commit_writer_stall_entry")
 
@@ -354,25 +341,13 @@ call_count_helper.add_aggregation("call_counts",
                                   BCCHelper.COUNT_AGGREGATION, "count")
 call_count_helper.add_key_type("name")
 
-if (not args.collection_sec):
-    print(" Tracing enabled... Hit Ctrl-C to end.")
-
-# Collect data for a collection interval if specified
-if (args.collection_sec):
-    sleep(args.collection_sec)
-    try:
-        print("%-16s\n" % strftime("%D - %H:%M:%S %Z"))
-        latency_helper.printall()
-        call_count_helper.printall()
-        exit(0)
-    except Exception as e:
-        print(str(e))
-        exit(0)
-
-# Collect data until keyborad interrupt with output for each second
+#
+# Collect data until keyboard interrupt
+#
+print(" Tracing enabled... Hit Ctrl-C to end.")
 while True:
     try:
-        sleep(60)
+        sleep(args.collection_sec)
     except KeyboardInterrupt:
         print("%-16s\n" % strftime("%D - %H:%M:%S %Z"))
         latency_helper.printall()
