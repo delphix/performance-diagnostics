@@ -26,6 +26,6 @@ override_dh_auto_install:
 	dh_install telegraf/delphix-telegraf-service telegraf/perf_playbook /usr/bin
 	dh_install telegraf/delphix-telegraf.service /lib/systemd/system
 	dh_install telegraf/telegraf* telegraf/*.sh /etc/telegraf
-	dh_install influxdb/delphix-influxdb-service influxdb/delphix-influxdb-init /usr/bin
+	dh_install influxdb/delphix-influxdb-service influxdb/delphix-influxdb-init influxdb/perf_influxdb /usr/bin
 	dh_install influxdb/delphix-influxdb.service /lib/systemd/system
 	dh_install influxdb/influxdb.conf influxdb/influxdb-init.conf /etc/influxdb

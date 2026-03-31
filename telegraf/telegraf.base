@@ -44,13 +44,9 @@
   data_format = "json"
   namepass = ["agg_*"]
 
-# Update token from /etc/influxdb/influxdb_meta (INFLUXDB_ADMIN_TOKEN), then uncomment and restart telegraf.
-#[[outputs.influxdb_v2]]
-#  urls = ["http://127.0.0.1:8086"]
-#  token = ""
-#  organization = "delphix"
-#  bucket = "default"
-#  namepass = ["cpu", "disk", "diskio", "mem", "net", "procstat", "processes", "swap", "system", "zfs"]
+# InfluxDB output is managed via /etc/telegraf/telegraf.outputs.influxdb (written by
+# delphix-influxdb-init) and the /etc/telegraf/INFLUXDB_ENABLED flag.
+# Use 'perf_influxdb enable|disable' to toggle and restart Telegraf.
 
 ###############################################################################
 #                            INPUT PLUGINS                                    #

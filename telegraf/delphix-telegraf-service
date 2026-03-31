@@ -3,7 +3,9 @@ BASE_CONFIG=/etc/telegraf/telegraf.base
 DOSE_INPUTS=/etc/telegraf/telegraf.inputs.dose
 DCT_INPUTS=/etc/telegraf/telegraf.inputs.dct
 PLAYBOOK_INPUTS=/etc/telegraf/telegraf.inputs.playbook
+INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
 PLAYBOOK_FLAG=/etc/telegraf/PLAYBOOK_ENABLED
+INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
 TELEGRAF_CONFIG=/etc/telegraf/telegraf.conf
 
 
@@ -19,6 +21,10 @@ function engine_is_object_based() {
 
 function playbook_is_enabled() {
 	[[ -f $PLAYBOOK_FLAG ]]
+}
+
+function influxdb_is_enabled() {
+	[[ -f $INFLUXDB_FLAG ]]
 }
 
 rm -f $TELEGRAF_CONFIG
@@ -41,6 +47,10 @@ else
 	else
 		cat $BASE_CONFIG > $TELEGRAF_CONFIG
 	fi
+fi
+
+if influxdb_is_enabled && [[ -f $INFLUXDB_OUTPUT ]]; then
+	cat $INFLUXDB_OUTPUT >> $TELEGRAF_CONFIG
 fi
 
 /usr/bin/telegraf -config $TELEGRAF_CONFIG

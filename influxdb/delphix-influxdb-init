@@ -16,7 +16,8 @@ INFLUXDB_META_FILE="$INFLUXDB_CONFIG_DIR/influxdb_meta"
 # State file written immediately after /api/v2/setup so the script can resume
 # if it is interrupted before the metadata file is fully written.
 INFLUXDB_SETUP_STATE_FILE="$INFLUXDB_CONFIG_DIR/influxdb_setup_state"
-TELEGRAF_BASE="/etc/telegraf/telegraf.base"
+INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
+INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
 INFLUXDB_INIT_CONF="$INFLUXDB_CONFIG_DIR/influxdb-init.conf"
 
 # Load tunable configuration (org, bucket, retention, wait parameters).
@@ -156,14 +157,11 @@ READ_TOKEN_RESPONSE=$(influx_post "/api/v2/authorizations" "{
 READ_TOKEN=$(json_field "$READ_TOKEN_RESPONSE" "['token']") || exit 1
 
 #
-# Append the [[outputs.influxdb_v2]] stanza to telegraf.base so Telegraf
-# knows where to ship metrics.
+# Write the [[outputs.influxdb_v2]] stanza to a dedicated telegraf output file
+# and enable it via the INFLUXDB_ENABLED flag. The flag is read by
+# delphix-telegraf-service to conditionally include this output.
 #
-if [[ ! -f "$TELEGRAF_BASE" ]]; then
-	log "WARNING: $TELEGRAF_BASE not found, skipping Telegraf output stanza."
-elif ! grep -q "^[[:space:]]*#\{0,1\}\[\[outputs\.influxdb_v2\]\]" "$TELEGRAF_BASE"; then
-	cat >>"$TELEGRAF_BASE" <<EOF
-
+cat >"$INFLUXDB_OUTPUT" <<EOF
 [[outputs.influxdb_v2]]
   urls = ["http://127.0.0.1:8086"]
   token = "$WRITE_TOKEN"
@@ -171,9 +169,9 @@ elif ! grep -q "^[[:space:]]*#\{0,1\}\[\[outputs\.influxdb_v2\]\]" "$TELEGRAF_BA
   bucket = "$INFLUXDB_BUCKET"
   namepass = ["cpu", "disk", "diskio", "mem", "net", "procstat", "processes", "swap", "system", "zfs"]
 EOF
-fi
 # Enforce restrictive permissions so the write token is not world-readable.
-chmod 640 "$TELEGRAF_BASE"
+chmod 640 "$INFLUXDB_OUTPUT"
+touch "$INFLUXDB_FLAG"
 
 #
 # Persist org/bucket/admin credentials/tokens so DE APIs can expose them to DCT
