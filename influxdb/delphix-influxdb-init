@@ -1,0 +1,200 @@
+#!/bin/bash -eu
+#
+# Copyright (c) 2026 by Delphix. All rights reserved.
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# One-time InfluxDB initialization: creates org, bucket, admin token,
+# a read-only token for DCT Smart Proxy, and appends the
+# [[outputs.influxdb_v2]] stanza to /etc/telegraf/telegraf.base.
+# Skips setup if InfluxDB is already initialized.
+#
+
+INFLUXDB_URL="http://127.0.0.1:8086"
+INFLUXDB_CONFIG_DIR="/etc/influxdb"
+INFLUXDB_META_FILE="$INFLUXDB_CONFIG_DIR/influxdb_meta"
+# State file written immediately after /api/v2/setup so the script can resume
+# if it is interrupted before the metadata file is fully written.
+INFLUXDB_SETUP_STATE_FILE="$INFLUXDB_CONFIG_DIR/influxdb_setup_state"
+TELEGRAF_BASE="/etc/telegraf/telegraf.base"
+INFLUXDB_INIT_CONF="$INFLUXDB_CONFIG_DIR/influxdb-init.conf"
+
+# Load tunable configuration (org, bucket, retention, wait parameters).
+# shellcheck source=/etc/influxdb/influxdb-init.conf
+# shellcheck disable=SC1091
+source "$INFLUXDB_INIT_CONF"
+
+INFLUXDB_ADMIN_USER="admin"
+INFLUXDB_ADMIN_PASSWORD="$(openssl rand -hex 16)"
+
+#
+# Log a message to stderr with a timestamp.
+#
+log() {
+	echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*" >&2
+}
+
+#
+# Extract a field from a JSON string using python3.
+#
+json_field() {
+	local json="$1"
+	local field="$2"
+	echo "$json" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())$field)" ||
+		{ log "ERROR: Failed to parse field '$field' from JSON response."; return 1; }
+}
+
+#
+# POST to the InfluxDB HTTP API. Exits with an error if the request fails.
+#
+influx_post() {
+	local endpoint="$1"
+	local data="$2"
+	local auth_header="${3:-}"
+
+	local curl_args=(-sf -X POST "$INFLUXDB_URL$endpoint" -H 'Content-Type: application/json' -d "$data")
+	[[ -n "$auth_header" ]] && curl_args+=(-H "Authorization: Token $auth_header")
+
+	local response
+	response=$(curl "${curl_args[@]}") ||
+		{ log "ERROR: HTTP POST to '$endpoint' failed."; return 1; }
+	echo "$response"
+}
+
+mkdir -p "$INFLUXDB_CONFIG_DIR"
+
+# Skip if already fully initialized.
+if [[ -f "$INFLUXDB_META_FILE" ]]; then
+	log "InfluxDB already initialized, skipping."
+	exit 0
+fi
+
+#
+# Wait for InfluxDB to be ready.
+#
+ready=false
+for i in $(seq 1 "$INFLUXDB_WAIT_RETRIES"); do
+	if curl -sf "$INFLUXDB_URL/health" &>/dev/null; then
+		ready=true
+		break
+	fi
+	sleep "$INFLUXDB_WAIT_INTERVAL"
+done
+
+if [[ "$ready" != "true" ]]; then
+	log "ERROR: InfluxDB did not become ready after $((INFLUXDB_WAIT_RETRIES * INFLUXDB_WAIT_INTERVAL))s."
+	exit 1
+fi
+
+#
+# Initial setup — creates org, bucket, and returns admin token + IDs.
+# /api/v2/setup is a one-shot operation; if the script is interrupted after
+# this point and re-run, the state file lets us skip setup and reuse the
+# already-created admin token.
+#
+ADMIN_TOKEN=""
+ORG_ID=""
+BUCKET_ID=""
+
+if [[ -f "$INFLUXDB_SETUP_STATE_FILE" ]]; then
+	while IFS= read -r line; do
+		key="${line%%=*}"
+		value="${line#*=}"
+		case "$key" in
+			ADMIN_TOKEN) ADMIN_TOKEN="$value" ;;
+			ORG_ID)      ORG_ID="$value" ;;
+			BUCKET_ID)   BUCKET_ID="$value" ;;
+		esac
+	done <"$INFLUXDB_SETUP_STATE_FILE"
+else
+	SETUP_RESPONSE=$(influx_post "/api/v2/setup" "{
+		\"username\": \"$INFLUXDB_ADMIN_USER\",
+		\"password\": \"$INFLUXDB_ADMIN_PASSWORD\",
+		\"org\": \"$INFLUXDB_ORG\",
+		\"bucket\": \"$INFLUXDB_BUCKET\",
+		\"retentionPeriodSeconds\": $INFLUXDB_RETENTION_SECONDS
+	}") || exit 1
+
+	ADMIN_TOKEN=$(json_field "$SETUP_RESPONSE" "['auth']['token']") || exit 1
+	ORG_ID=$(json_field "$SETUP_RESPONSE" "['org']['id']") || exit 1
+	BUCKET_ID=$(json_field "$SETUP_RESPONSE" "['bucket']['id']") || exit 1
+
+	# Persist admin token + IDs immediately so a subsequent re-run can resume
+	# without repeating the one-shot setup call.
+	old_umask="$(umask)"
+	umask 077
+	tmp_state="$(mktemp "${INFLUXDB_SETUP_STATE_FILE}.XXXXXX")"
+	printf 'ADMIN_TOKEN=%s\nORG_ID=%s\nBUCKET_ID=%s\n' \
+		"$ADMIN_TOKEN" "$ORG_ID" "$BUCKET_ID" >"$tmp_state"
+	chmod 600 "$tmp_state"
+	mv "$tmp_state" "$INFLUXDB_SETUP_STATE_FILE"
+	umask "$old_umask"
+fi
+
+#
+# Create a write-only token for Telegraf.
+#
+WRITE_TOKEN_RESPONSE=$(influx_post "/api/v2/authorizations" "{
+	\"orgID\": \"$ORG_ID\",
+	\"description\": \"telegraf-write-token\",
+	\"permissions\": [
+		{\"action\": \"write\", \"resource\": {\"type\": \"buckets\", \"id\": \"$BUCKET_ID\", \"orgID\": \"$ORG_ID\"}}
+	]
+}" "$ADMIN_TOKEN") || exit 1
+WRITE_TOKEN=$(json_field "$WRITE_TOKEN_RESPONSE" "['token']") || exit 1
+
+#
+# Create a read-only token for DCT Smart Proxy.
+#
+READ_TOKEN_RESPONSE=$(influx_post "/api/v2/authorizations" "{
+	\"orgID\": \"$ORG_ID\",
+	\"description\": \"dct-read-token\",
+	\"permissions\": [
+		{\"action\": \"read\", \"resource\": {\"type\": \"buckets\", \"id\": \"$BUCKET_ID\", \"orgID\": \"$ORG_ID\"}}
+	]
+}" "$ADMIN_TOKEN") || exit 1
+READ_TOKEN=$(json_field "$READ_TOKEN_RESPONSE" "['token']") || exit 1
+
+#
+# Append the [[outputs.influxdb_v2]] stanza to telegraf.base so Telegraf
+# knows where to ship metrics.
+#
+if [[ ! -f "$TELEGRAF_BASE" ]]; then
+	log "WARNING: $TELEGRAF_BASE not found, skipping Telegraf output stanza."
+elif ! grep -q "^[[:space:]]*#\{0,1\}\[\[outputs\.influxdb_v2\]\]" "$TELEGRAF_BASE"; then
+	cat >>"$TELEGRAF_BASE" <<EOF
+
+[[outputs.influxdb_v2]]
+  urls = ["http://127.0.0.1:8086"]
+  token = "$WRITE_TOKEN"
+  organization = "$INFLUXDB_ORG"
+  bucket = "$INFLUXDB_BUCKET"
+  namepass = ["cpu", "disk", "diskio", "mem", "net", "procstat", "processes", "swap", "system", "zfs"]
+EOF
+fi
+# Enforce restrictive permissions so the write token is not world-readable.
+chmod 640 "$TELEGRAF_BASE"
+
+#
+# Persist org/bucket/admin credentials/tokens so DE APIs can expose them to DCT
+# and so the admin can access the InfluxDB UI. File is chmod 600 (root-only).
+#
+# Use a restrictive umask and a temp file to avoid a window where tokens are
+# readable by non-root users, then atomically move the file into place.
+old_umask="$(umask)"
+umask 077
+tmp_meta="$(mktemp "${INFLUXDB_META_FILE}.XXXXXX")"
+cat >"$tmp_meta" <<EOF
+INFLUXDB_ORG=$INFLUXDB_ORG
+INFLUXDB_BUCKET=$INFLUXDB_BUCKET
+INFLUXDB_ADMIN_USER=$INFLUXDB_ADMIN_USER
+INFLUXDB_ADMIN_PASSWORD=$INFLUXDB_ADMIN_PASSWORD
+INFLUXDB_WRITE_TOKEN=$WRITE_TOKEN
+INFLUXDB_READ_TOKEN=$READ_TOKEN
+EOF
+chmod 600 "$tmp_meta"
+mv "$tmp_meta" "$INFLUXDB_META_FILE"
+umask "$old_umask"
+
+rm -f "$INFLUXDB_SETUP_STATE_FILE"
+log "InfluxDB initialized successfully."

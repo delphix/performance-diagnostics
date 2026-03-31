@@ -1,0 +1,24 @@
+#!/bin/bash
+#
+# Copyright (c) 2026 by Delphix. All rights reserved.
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Wrapper script to start InfluxDB 2.x and run first-time initialization.
+#
+
+INFLUXDB_CONFIG=/etc/influxdb/influxdb.conf
+INFLUXDB_INIT=/usr/bin/delphix-influxdb-init
+
+# Start influxd in the background
+/usr/bin/influxd --config-path "$INFLUXDB_CONFIG" &
+INFLUXDB_PID=$!
+
+# Run initialization (the init script handles waiting for InfluxDB to be ready)
+if ! $INFLUXDB_INIT; then
+	echo "ERROR: delphix-influxdb-init failed, stopping influxd" >&2
+	kill "$INFLUXDB_PID" 2>/dev/null
+	exit 1
+fi
+
+wait "$INFLUXDB_PID"
