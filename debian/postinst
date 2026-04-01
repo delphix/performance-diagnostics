@@ -24,6 +24,9 @@ if ! groups "$USER" | grep -q "\b$GROUP\b"; then
 	fi
 fi
 
+# Remove the influxdb2 package default config — we use influxdb.toml exclusively.
+rm -f /etc/influxdb/config.toml
+
 #DEBHELPER#
 
 exit 0

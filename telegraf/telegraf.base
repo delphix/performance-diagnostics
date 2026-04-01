@@ -44,12 +44,9 @@
   data_format = "json"
   namepass = ["agg_*"]
 
-# Enable Live Monitoring, intended for internal Delphix use only:
-#[[outputs.influxdb]]
-#  urls = ["http://dbsvr.company.com:8086"]
-#  database = "live_metrics"
-#  skip_database_creation = true
-#  data_format = "influx"
+# InfluxDB output is managed via /etc/telegraf/telegraf.outputs.influxdb (written by
+# delphix-influxdb-init) and the /etc/telegraf/INFLUXDB_ENABLED flag.
+# Use 'perf_influxdb enable|disable' to toggle and restart Telegraf.
 
 ###############################################################################
 #                            INPUT PLUGINS                                    #

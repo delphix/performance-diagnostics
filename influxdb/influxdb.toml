@@ -1,0 +1,10 @@
+#
+# Copyright 2026 Delphix. All rights reserved.
+#
+# InfluxDB 2.x Configuration
+#
+
+bolt-path = "/var/lib/influxdb/influxd.bolt"
+engine-path = "/var/lib/influxdb/engine"
+http-bind-address = "127.0.0.1:8086"
+log-level = "warn"
