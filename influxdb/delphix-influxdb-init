@@ -184,7 +184,7 @@ cat >"$INFLUXDB_OUTPUT" <<EOF
   token = "$WRITE_TOKEN"
   organization = "$INFLUXDB_ORG"
   bucket = "$INFLUXDB_BUCKET"
-  namepass = ["cpu", "disk", "diskio", "mem", "net", "procstat", "processes", "swap", "system", "zfs"]
+  namepass = ["cpu", "disk", "diskio", "mem", "net", "procstat", "processes", "swap", "system", "zfs", "estat_nfs", "estat_iscsi"]
 EOF
 # Enforce restrictive permissions so the write token is not world-readable.
 chmod 640 "$INFLUXDB_OUTPUT"

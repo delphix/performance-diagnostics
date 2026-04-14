@@ -1,0 +1,36 @@
+##############################################################################
+# NFS server I/O and iSCSI target I/O — included when InfluxDB is enabled
+# but Performance Playbook is not (playbook already contains these inputs).
+
+[[inputs.execd]]
+  command = ["estat", "nfs", "-jm", "10"]
+  name_override = "estat_nfs"
+  signal = "none"
+  restart_delay = "30s"
+  data_format = "json"
+  tag_keys = [
+    "name",
+    "axis"
+  ]
+  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
+
+[[inputs.execd]]
+  command = ["estat", "iscsi", "-jm", "10"]
+  name_override = "estat_iscsi"
+  signal = "none"
+  restart_delay = "30s"
+  data_format = "json"
+  tag_keys = [
+    "name",
+    "axis"
+  ]
+  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
+
+# Convert estat string fields to integers so they are not dropped by Telegraf.
+[[processors.converter]]
+  namepass = ["estat_nfs", "estat_iscsi"]
+  [processors.converter.fields]
+    integer = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)"]
+
+# End of NFS/iSCSI section
+##############################################################################

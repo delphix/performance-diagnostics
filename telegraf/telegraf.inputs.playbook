@@ -1,31 +1,7 @@
 ##############################################################################
-# Performance Playbook (estat, nfs_threads) collection 
-
-# Collect output from "estat nfs -jm 10"
-[[inputs.execd]]
-  command = ["estat", "nfs", "-jm", "10"]
-  name_override = "estat_nfs"
-  signal = "none"
-  restart_delay = "30s"
-  data_format = "json"
-  tag_keys = [
-    "name",
-    "axis"
-  ]
-  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
-
-# Collect output from "estat iscsi -jm 10"
-[[inputs.execd]]
-  command = ["estat", "iscsi", "-jm", "10"]
-  name_override = "estat_iscsi"
-  signal = "none"
-  restart_delay = "30s"
-  data_format = "json"
-  tag_keys = [
-    "name",
-    "axis"
-  ]
-  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
+# Performance Playbook (estat, nfs_threads) collection
+# Note: estat_nfs and estat_iscsi are in telegraf.inputs.nfs_iscsi so they
+# are also available when only InfluxDB is enabled (without the full playbook).
 
 # Collect output from "estat zpl -jm 10"
 [[inputs.execd]]
