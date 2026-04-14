@@ -1,7 +1,8 @@
 ##############################################################################
-# NFS server I/O and iSCSI target I/O — included when InfluxDB is enabled
-# but Performance Playbook is not (playbook already contains these inputs).
+# Storage I/O collection: NFS server, iSCSI target, and backend disk I/O.
+# Always included when InfluxDB is enabled, independent of playbook state.
 
+# Collect output from "estat nfs -jm 10"
 [[inputs.execd]]
   command = ["estat", "nfs", "-jm", "10"]
   name_override = "estat_nfs"
@@ -14,6 +15,7 @@
   ]
   json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
 
+# Collect output from "estat iscsi -jm 10"
 [[inputs.execd]]
   command = ["estat", "iscsi", "-jm", "10"]
   name_override = "estat_iscsi"
@@ -26,11 +28,24 @@
   ]
   json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
 
+# Collect output from "estat backend-io -jm 10" (stbtrace io equivalent)
+[[inputs.execd]]
+  command = ["estat", "backend-io", "-jm", "10"]
+  name_override = "estat_backend-io"
+  signal = "none"
+  restart_delay = "30s"
+  data_format = "json"
+  tag_keys = [
+    "name",
+    "axis"
+  ]
+  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
+
 # Convert estat string fields to integers so they are not dropped by Telegraf.
 [[processors.converter]]
-  namepass = ["estat_nfs", "estat_iscsi"]
+  namepass = ["estat_nfs", "estat_iscsi", "estat_backend-io"]
   [processors.converter.fields]
     integer = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)"]
 
-# End of NFS/iSCSI section
+# End of Storage I/O section
 ##############################################################################

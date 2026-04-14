@@ -1,25 +1,13 @@
 ##############################################################################
 # Performance Playbook (estat, nfs_threads) collection
-# Note: estat_nfs and estat_iscsi are in telegraf.inputs.nfs_iscsi so they
-# are also available when only InfluxDB is enabled (without the full playbook).
+# Note: estat_nfs, estat_iscsi, and estat_backend-io live in
+# telegraf.inputs.nfs_iscsi and are always collected when InfluxDB is
+# enabled, independent of playbook state.
 
 # Collect output from "estat zpl -jm 10"
 [[inputs.execd]]
   command = ["estat", "zpl", "-jm", "10"]
   name_override = "estat_zpl"
-  signal = "none"
-  restart_delay = "30s"
-  data_format = "json"
-  tag_keys = [
-    "name",
-    "axis"
-  ]
-  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
-
-# Collect output from "estat backend-io -jm 10"
-[[inputs.execd]]
-  command = ["estat", "backend-io", "-jm", "10"]
-  name_override = "estat_backend-io"
   signal = "none"
   restart_delay = "30s"
   data_format = "json"
@@ -99,8 +87,11 @@
 ###############################################################################
 #                         PROCESSOR PLUGINS                                   #
 ###############################################################################
-# Convert strings from estat into integer values so they don't get dropped
+# Convert strings from estat into integer values so they don't get dropped.
+# Scoped to playbook-only metrics; estat_nfs/iscsi have their own converter
+# in telegraf.inputs.nfs_iscsi.
 [[processors.converter]]
+  namepass = ["estat_zpl", "estat_zio", "estat_zvol", "estat_zio-queue", "estat_metaslab-alloc"]
   [processors.converter.fields]
     integer = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)"]
 

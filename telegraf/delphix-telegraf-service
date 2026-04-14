@@ -3,7 +3,7 @@ BASE_CONFIG=/etc/telegraf/telegraf.base
 DOSE_INPUTS=/etc/telegraf/telegraf.inputs.dose
 DCT_INPUTS=/etc/telegraf/telegraf.inputs.dct
 PLAYBOOK_INPUTS=/etc/telegraf/telegraf.inputs.playbook
-NFS_ISCSI_INPUTS=/etc/telegraf/telegraf.inputs.nfs_iscsi
+STORAGE_IO_INPUTS=/etc/telegraf/telegraf.inputs.storage_io
 INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
 PLAYBOOK_FLAG=/etc/telegraf/PLAYBOOK_ENABLED
 INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
@@ -50,12 +50,8 @@ else
 	fi
 fi
 
-if playbook_is_enabled || influxdb_is_enabled; then
-	cat $NFS_ISCSI_INPUTS >> $TELEGRAF_CONFIG
-fi
-
 if influxdb_is_enabled && [[ -f $INFLUXDB_OUTPUT ]]; then
-	cat $INFLUXDB_OUTPUT >> $TELEGRAF_CONFIG
+	cat $STORAGE_IO_INPUTS $INFLUXDB_OUTPUT >> $TELEGRAF_CONFIG
 fi
 
 # Restrict permissions so the InfluxDB write token is not world-readable.

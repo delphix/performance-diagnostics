@@ -11,41 +11,9 @@
 ###############################################################################
 #                            OUTPUT PLUGINS                                   #
 ###############################################################################
-# Define the main metric output file, excluding aggregated stats and 
-# Performance Playbook (estat) data.
-[[outputs.file]]
-  files = ["/var/log/telegraf/metrics.json"]
-  rotation_max_size = "50MB"
-  rotation_max_archives = 9
-  data_format = "json"
-  namedrop = ["*estat_*", "agg_*", "zfs", "zpool*", "zcache*", "docker*"]
-
-# Define output file for ZFS related metrics
-[[outputs.file]]
-  files = ["/var/log/telegraf/metrics_zfs.json"]
-  rotation_max_size = "30MB"
-  rotation_max_archives = 5
-  data_format = "json"
-  namepass = ["zpool*", "zcache*", "zfs"]
-
-# Define output file for Performance Playbook (estat) metrics
-[[outputs.file]]
-  files = ["/var/log/telegraf/metrics_estat.json"]
-  rotation_max_size = "30MB"
-  rotation_max_archives = 5
-  data_format = "json"
-  namepass = ["*estat_*"]
-
-# Define output file for aggregate statistics
-[[outputs.file]]
-  files = ["/var/log/telegraf/metric_aggregates.json"]
-  rotation_max_size = "30MB"
-  rotation_max_archives = 5
-  data_format = "json"
-  namepass = ["agg_*"]
-
-# InfluxDB output is managed via /etc/telegraf/telegraf.outputs.influxdb (written by
-# delphix-influxdb-init) and the /etc/telegraf/INFLUXDB_ENABLED flag.
+# All metrics are ingested into InfluxDB. The output stanza is written by
+# delphix-influxdb-init to /etc/telegraf/telegraf.outputs.influxdb and
+# appended here by delphix-telegraf-service when InfluxDB is enabled.
 # Use 'perf_influxdb enable|disable' to toggle and restart Telegraf.
 
 ###############################################################################
@@ -64,15 +32,10 @@
 [[inputs.disk]]
   mount_points = ["/","/domain0"]
 
-# Get disk I/O stats
+# Get disk I/O stats, excluding ZFS zvol devices (zd*) which are internal
+# ZFS block devices not useful for performance diagnostics.
 [[inputs.diskio]]
-
-# Track stats for the current metric files
-[[inputs.filestat]]
-  files = ["/var/log/telegraf/metrics.json",
-  	   "/var/log/telegraf/metrics_estat.json",
-  	   "/var/log/telegraf/metrics_zfs.json",
-  	   "/var/log/telegraf/metric_aggregates.json"]
+  tagdrop = {name = ["zd*"]}
 
 # Get Memory stats
 [[inputs.mem]]
@@ -80,6 +43,20 @@
 # Get some network interface stats
 [[inputs.net]]
   fieldpass = ["tcp*","bytes*","packets*","err*","drop*"]
+
+# Per-connection TCP stats (bytes, RTT, window sizes) via connstat.
+# Mirrors the TCP_STATS collected by the mgmt stack into analytics_datapoint.
+[[inputs.execd]]
+  command = ["/etc/telegraf/connstat-stats.sh"]
+  name_override = "tcp_stats"
+  signal = "none"
+  restart_delay = "30s"
+  data_format = "csv"
+  csv_delimiter = ","
+  csv_trim_space = true
+  csv_column_names = ["laddr", "lport", "raddr", "rport", "inbytes", "outbytes", "retranssegs", "suna", "unsent", "swnd", "cwnd", "rwnd", "rtt"]
+  csv_column_types = ["string", "int", "string", "int", "int", "int", "int", "int", "int", "int", "int", "int", "int"]
+  csv_tag_columns = ["laddr", "lport", "raddr", "rport"]
 
 # Track CPU and Memory for the "delphix-mgmt" service (and children).
 [[inputs.procstat]]

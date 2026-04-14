@@ -11,12 +11,5 @@
   ]
   docker_label_exclude = ["com.docker.compose.*", "resty*"]
 
- [[outputs.file]]
-  files = ["/var/log/telegraf/metrics_docker.json"]
-  rotation_max_size = "30MB"
-  rotation_max_archives = 5
-  data_format = "json"
-  namepass = ["docker*"]
-
 ####################### End of Docker/DCT services Metrics #######################
 
