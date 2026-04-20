@@ -51,7 +51,17 @@ else
 fi
 
 if influxdb_is_enabled && [[ -f $INFLUXDB_OUTPUT ]]; then
-	cat $STORAGE_IO_INPUTS $INFLUXDB_OUTPUT >> $TELEGRAF_CONFIG
+	if [[ -f $STORAGE_IO_INPUTS ]]; then
+		cat $STORAGE_IO_INPUTS >> $TELEGRAF_CONFIG
+	fi
+	cat $INFLUXDB_OUTPUT >> $TELEGRAF_CONFIG
+else
+	if influxdb_is_enabled; then
+		logger -t delphix-telegraf "WARNING: INFLUXDB_ENABLED is set but $INFLUXDB_OUTPUT is missing — metrics will be discarded. Run delphix-influxdb-init to restore InfluxDB output."
+	fi
+	# No InfluxDB output configured. Add discard so Telegraf can start —
+	# it requires at least one output plugin.
+	echo "[[outputs.discard]]" >> $TELEGRAF_CONFIG
 fi
 
 # Restrict permissions so the InfluxDB write token is not world-readable.

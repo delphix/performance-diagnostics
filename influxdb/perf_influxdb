@@ -32,7 +32,7 @@ function enable_influxdb() {
 function disable_influxdb() {
 	date
 	echo "Disabling InfluxDB Metric Output"
-	rm -rf $INFLUXDB_FLAG
+	rm -f $INFLUXDB_FLAG
 	systemctl restart delphix-telegraf
 }
 

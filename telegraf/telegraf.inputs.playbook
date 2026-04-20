@@ -1,7 +1,7 @@
 ##############################################################################
 # Performance Playbook (estat, nfs_threads) collection
 # Note: estat_nfs, estat_iscsi, and estat_backend-io live in
-# telegraf.inputs.nfs_iscsi and are always collected when InfluxDB is
+# telegraf.inputs.storage_io and are always collected when InfluxDB is
 # enabled, independent of playbook state.
 
 # Collect output from "estat zpl -jm 10"
@@ -88,49 +88,16 @@
 #                         PROCESSOR PLUGINS                                   #
 ###############################################################################
 # Convert strings from estat into integer values so they don't get dropped.
-# Scoped to playbook-only metrics; estat_nfs/iscsi have their own converter
-# in telegraf.inputs.nfs_iscsi.
+# Scoped to playbook-only metrics; estat_nfs/iscsi/backend-io have their own
+# converter in telegraf.inputs.storage_io.
 [[processors.converter]]
   namepass = ["estat_zpl", "estat_zio", "estat_zvol", "estat_zio-queue", "estat_metaslab-alloc"]
   [processors.converter.fields]
     integer = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)"]
 
-# The estat output contains a nested latency histogram, so we need to 
-# parse that out as a new array metric rather than a non-JSON string.
-#
-# From this:
-#	"microseconds":"{20000,5},{30000,15},{40000,3},{50000,24}"
-# to this:
-#	"microseconds":"{20000:5,30000:15,40000:3,50000:24}"
-#
-# Clone the original so we have a "new" metric with a "hist_" name prefix
-[[processors.clone]]
-  order = 1
-  name_prefix = "hist_"
-  namepass = ["estat_*"]
-
-# Rewrite the histograms for the "hist_estat_*" metrics as JSON objects
-[[processors.regex]]
-  order = 2
-  namepass = ["hist_estat_*"]
-  [[processors.regex.fields]]
-    key = "microseconds"
-    pattern = "{(\\d+),(\\d+)}"
-    replacement = "\"${1}\":${2}"
-  [[processors.regex.fields]]
-    key = "microseconds"
-    pattern = ".*"
-    replacement = "{$0}"
-
-# Now parse out the arrays for "hist_estat_*" metrics
-[[processors.parser]]
-  order = 3
-  merge = "override"
-  parse_fields = ["microseconds"]
-  drop_original = false
-  data_format = "json"
-  namepass = ["hist_estat_*"]
-  fieldpass = ["microseconds"]
+# Note: histogram processors (clone/regex/parser) for all estat_* measurements
+# live in telegraf.inputs.storage_io, which is always included when InfluxDB
+# is enabled. No duplication needed here.
 
 # End of Processor section
 ##############################################################################

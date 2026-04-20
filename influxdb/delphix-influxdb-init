@@ -212,3 +212,7 @@ umask "$old_umask"
 
 rm -f "$INFLUXDB_SETUP_STATE_FILE"
 log "InfluxDB initialized successfully."
+
+# Restart Telegraf so it picks up the InfluxDB output stanza written above.
+# This is only reached on first boot (subsequent boots exit early at the top).
+systemctl restart delphix-telegraf 2>/dev/null || true

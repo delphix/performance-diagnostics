@@ -75,9 +75,6 @@
 # Get process counts
 [[inputs.processes]]
 
-# Get swap memory usage
-[[inputs.swap]]
-
 # Get misc 'other' stats (load and uptime)
 [[inputs.system]]
 
@@ -101,5 +98,5 @@
   drop_original = false
   stats = ["min", "max", "mean", "stdev"]
   name_prefix = "agg_"
-  namepass = ["cpu","disk","diskio","mem","net","processes","system","swap"]
+  namepass = ["cpu","disk","diskio","mem","net","processes","system"]
 

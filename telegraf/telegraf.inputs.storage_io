@@ -1,6 +1,9 @@
 ##############################################################################
 # Storage I/O collection: NFS server, iSCSI target, and backend disk I/O.
 # Always included when InfluxDB is enabled, independent of playbook state.
+# NFS/iSCSI/backend-IO are also collected continuously by delphix-stat into
+# analytics_datapoint (the source for Support Grafana), so full histogram
+# capture here mirrors that existing always-on precedent.
 
 # Collect output from "estat nfs -jm 10"
 [[inputs.execd]]
@@ -46,6 +49,36 @@
   namepass = ["estat_nfs", "estat_iscsi", "estat_backend-io"]
   [processors.converter.fields]
     integer = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)"]
+
+# Parse microseconds latency histograms for all estat_* measurements.
+# Transforms "{20000,5},{30000,15}" → {"20000":5,"30000":15} as a JSON object.
+# Covers both storage_io (estat_nfs/iscsi/backend-io) and playbook measurements
+# (estat_zpl/zvol/zio/etc) — no duplication needed in telegraf.inputs.playbook.
+[[processors.clone]]
+  order = 1
+  name_prefix = "hist_"
+  namepass = ["estat_*"]
+
+[[processors.regex]]
+  order = 2
+  namepass = ["hist_estat_*"]
+  [[processors.regex.fields]]
+    key = "microseconds"
+    pattern = "{(\\d+),(\\d+)}"
+    replacement = "\"${1}\":${2}"
+  [[processors.regex.fields]]
+    key = "microseconds"
+    pattern = ".*"
+    replacement = "{$0}"
+
+[[processors.parser]]
+  order = 3
+  merge = "override"
+  parse_fields = ["microseconds"]
+  drop_original = false
+  data_format = "json"
+  namepass = ["hist_estat_*"]
+  fieldpass = ["microseconds"]
 
 # End of Storage I/O section
 ##############################################################################
