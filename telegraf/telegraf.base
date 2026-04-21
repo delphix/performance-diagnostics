@@ -20,9 +20,11 @@
 #                            INPUT PLUGINS                                    #
 ###############################################################################
 
-# Get CPU usage
+# Get CPU usage — only cpu-total, not per-core (reduces data volume on
+# many-CPU engines; agg_cpu automatically inherits this restriction).
+# percpu defaults to true so must be explicitly set to false.
 [[inputs.cpu]]
-  percpu = true
+  percpu = false
   totalcpu = true
   collect_cpu_time = false
   report_active = false
@@ -34,8 +36,10 @@
 
 # Get disk I/O stats, excluding ZFS zvol devices (zd*) which are internal
 # ZFS block devices not useful for performance diagnostics.
+# wwid is a redundant 100+ char tag; the short-form name tag is sufficient.
 [[inputs.diskio]]
   tagdrop = {name = ["zd*"]}
+  tagexclude = ["wwid"]
 
 # Get Memory stats
 [[inputs.mem]]
@@ -44,8 +48,13 @@
 [[inputs.net]]
   fieldpass = ["tcp*","bytes*","packets*","err*","drop*"]
 
-# Per-connection TCP stats (bytes, RTT, window sizes) via connstat.
-# Mirrors the TCP_STATS collected by the mgmt stack into analytics_datapoint.
+# Per-endpoint TCP stats (bytes, RTT, window sizes) via connstat.
+# Aggregated by remote endpoint (laddr:raddr:rport) to mirror the aggregation
+# in LocalTCPStatsCollector — avoids cardinality explosion on Oracle dNFS
+# engines (hundreds of connections per VDB host) and Elastic Data engines
+# (many connections per object storage endpoint IP).
+# Cumulative fields (inbytes, outbytes, etc.) are summed; window/RTT fields
+# are averaged; connections = number of TCP connections aggregated.
 [[inputs.execd]]
   command = ["/etc/telegraf/connstat-stats.sh"]
   name_override = "tcp_stats"
@@ -54,9 +63,9 @@
   data_format = "csv"
   csv_delimiter = ","
   csv_trim_space = true
-  csv_column_names = ["laddr", "lport", "raddr", "rport", "inbytes", "outbytes", "retranssegs", "suna", "unsent", "swnd", "cwnd", "rwnd", "rtt"]
-  csv_column_types = ["string", "int", "string", "int", "int", "int", "int", "int", "int", "int", "int", "int", "int"]
-  csv_tag_columns = ["laddr", "lport", "raddr", "rport"]
+  csv_column_names = ["laddr", "raddr", "rport", "service", "inbytes", "outbytes", "retranssegs", "suna", "unsent", "swnd", "cwnd", "rwnd", "rtt", "connections"]
+  csv_column_types = ["string", "string", "int", "string", "int", "int", "int", "int", "int", "int", "int", "int", "int", "int"]
+  csv_tag_columns = ["laddr", "raddr", "rport", "service"]
 
 # Track CPU and Memory for the "delphix-mgmt" service (and children).
 [[inputs.procstat]]
@@ -79,8 +88,10 @@
 [[inputs.system]]
 
 # ZFS kstats (arcstat, abdstat, zfetch, etc)
+# arcstats_l2_* fields are L2ARC stats — unused on all appliances (no L2ARC).
 [[inputs.zfs]]
   interval = "1m"
+  fielddrop = ["arcstats_l2_*"]
 
 # Detailed ZFS pool metrics from "zpool_influxdb" (noisy)
 #[[inputs.exec]]
