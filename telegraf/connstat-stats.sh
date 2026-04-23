@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # Collect per-connection TCP stats from connstat and aggregate by remote
-# endpoint (laddr:raddr:rport) to bound cardinality on engines with many
+# endpoint (laddr:raddr:service) to bound cardinality on engines with many
 # connections — e.g. Oracle dNFS (hundreds of connections per VDB host) or
 # Elastic Data (many connections per object storage endpoint IP).
 # Mirrors the aggregation done by LocalTCPStatsCollector in the mgmt stack.
@@ -11,7 +11,7 @@
 # engine is the server) are identified correctly. Falls back to "unknown".
 #
 # Output fields per aggregated endpoint:
-#   laddr, raddr, rport, service
+#   laddr, raddr, service
 #   inbytes, outbytes, retranssegs, suna, unsent  (summed across connections)
 #   swnd, cwnd, rwnd, rtt                          (averaged across connections)
 #   connections                                    (count of aggregated conns)
@@ -33,33 +33,35 @@ BEGIN {
         }
     }
     close("/etc/services")
-    # Delphix DSP (Session Protocol) port — not present in /etc/services.
-    # Matches the ServiceProtocol special-case in LocalTCPStatsCollector.
-    svc[50001] = "dlpx-sp"
+    # Delphix-specific ports not present in /etc/services.
+    # Matches LocalTCPStatsCollector.getService() special-cases exactly.
+    svc[8415]  = "dlpx-sp"              # DSP (ServiceProtocol.PORT)
+    svc[50001] = "network-throughput-test" # TtcpPerfSession.DEFAULT_PORT
+    svc[8341]  = "oracle-logsync"       # HTTP server (TunableRegistry.HTTP_SERVER_PORT default)
+    svc[9100]  = "dlpx-connector"       # Host Connector (Connector.DEFAULT_PORT)
 }
 /^=/ {
     for (key in cnt) {
         n = cnt[key]
         split(key, k, SUBSEP)
-        print k[1] "," k[2] "," k[3] "," k[4] "," \
+        print k[1] "," k[2] "," k[3] "," \
               inb[key] "," outb[key] "," ret[key] "," sun[key] "," uns[key] "," \
               int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n
     }
+    fflush()
     delete cnt; delete inb; delete outb; delete ret
     delete sun; delete uns; delete sw; delete cw; delete rw; delete rt
     next
 }
 NF == 13 {
-    lport = $2 + 0
-    rport = $4 + 0
-    if (lport in svc) {
-        service = svc[lport]
-    } else if (rport in svc) {
-        service = svc[rport]
+    if (($2 + 0) in svc) {
+        service = svc[$2 + 0]
+    } else if (($4 + 0) in svc) {
+        service = svc[$4 + 0]
     } else {
         service = "unknown"
     }
-    key = $1 SUBSEP $3 SUBSEP rport SUBSEP service
+    key = $1 SUBSEP $3 SUBSEP service
     inb[key] += $5;  outb[key] += $6;  ret[key] += $7
     sun[key] += $8;  uns[key]  += $9
     sw[key]  += $10; cw[key]   += $11; rw[key]  += $12; rt[key] += $13

@@ -67,5 +67,32 @@
   namepass = ["estat_*"]
   fieldexclude = ["microseconds"]
 
+# Expand hist_estat_* microseconds histogram strings into per-bucket rows for
+# Grafana heatmap support. Each "{upper_bound_us,count}" pair becomes a
+# separate metric with le=<upper_bound_us> tag and count field, replacing the
+# opaque string. Runs after clone (order=1) and strings (order=2) so the
+# microseconds field is still present in hist_estat_* at this point.
+[[processors.starlark]]
+  order = 3
+  namepass = ["hist_estat_*"]
+  source = '''
+def apply(metric):
+    ms = metric.fields.get("microseconds")
+    if ms == None:
+        return [metric]
+
+    result = []
+    for pair in ms[1:-1].split("},{"):
+        parts = pair.split(",")
+        if len(parts) == 2:
+            m = deepcopy(metric)
+            m.tags["le"] = parts[0]
+            m.fields["count"] = int(parts[1])
+            m.fields.pop("microseconds")
+            result.append(m)
+
+    return result if result else [metric]
+'''
+
 # End of Storage I/O section
 ##############################################################################
