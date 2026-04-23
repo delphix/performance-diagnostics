@@ -33,12 +33,17 @@
 # Get mount point stats
 [[inputs.disk]]
   mount_points = ["/","/domain0"]
+  tagexclude = ["fstype", "mode"]
 
-# Get disk I/O stats, excluding ZFS zvol devices (zd*) which are internal
-# ZFS block devices not useful for performance diagnostics.
+# Get disk I/O stats for whole disks only — partitions add cardinality without
+# diagnostic value and account for ~30% of diskio/agg_diskio line volume.
+# Excluded:
+#   zd*        — ZFS zvol internal block devices
+#   *p[0-9]*   — NVMe partitions (nvme0n1p1, nvme0n1p9, etc.)
+#   sd*[0-9]*  — SCSI/SATA partitions (sda1, sdb2, etc.)
 # wwid is a redundant 100+ char tag; the short-form name tag is sufficient.
 [[inputs.diskio]]
-  tagdrop = {name = ["zd*"]}
+  tagdrop = {name = ["zd*", "*p[0-9]*", "sd*[0-9]*"]}
   tagexclude = ["wwid"]
 
 # Get Memory stats
@@ -73,6 +78,7 @@
   include_systemd_children = true
   namedrop = ["procstat_lookup"]
   fieldpass = ["memory_usage", "cpu_usage", "memory_rss"]
+  tagexclude = ["cgroup_full"]
 
 # Track CPU and Memory for the "zfs-object-agent" service (and children).
 [[inputs.procstat]]
@@ -80,6 +86,7 @@
   include_systemd_children = true
   namedrop = ["procstat_lookup"]
   fieldpass = ["memory_usage", "cpu_usage", "memory_rss"]
+  tagexclude = ["cgroup_full"]
 
 # Get process counts
 [[inputs.processes]]

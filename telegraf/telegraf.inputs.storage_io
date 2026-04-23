@@ -50,35 +50,22 @@
   [processors.converter.fields]
     integer = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)"]
 
-# Parse microseconds latency histograms for all estat_* measurements.
-# Transforms "{20000,5},{30000,15}" → {"20000":5,"30000":15} as a JSON object.
-# Covers both storage_io (estat_nfs/iscsi/backend-io) and playbook measurements
-# (estat_zpl/zvol/zio/etc) — no duplication needed in telegraf.inputs.playbook.
+# Clone estat_* measurements as hist_estat_* to hold histogram data only.
+# microseconds is removed from the originals (order 2 below) so it lives in
+# hist_estat_* exclusively — no duplication.
+# Keeps the original format "{20000,5},{30000,15}" compatible with import code.
 [[processors.clone]]
   order = 1
   name_prefix = "hist_"
   namepass = ["estat_*"]
 
-[[processors.regex]]
+# Drop microseconds from all original estat_* measurements after cloning.
+# Covers both storage_io (estat_nfs/iscsi/backend-io) and playbook
+# (estat_zpl/zvol/zio/etc) measurements in one place.
+[[processors.strings]]
   order = 2
-  namepass = ["hist_estat_*"]
-  [[processors.regex.fields]]
-    key = "microseconds"
-    pattern = "{(\\d+),(\\d+)}"
-    replacement = "\"${1}\":${2}"
-  [[processors.regex.fields]]
-    key = "microseconds"
-    pattern = ".*"
-    replacement = "{$0}"
-
-[[processors.parser]]
-  order = 3
-  merge = "override"
-  parse_fields = ["microseconds"]
-  drop_original = false
-  data_format = "json"
-  namepass = ["hist_estat_*"]
-  fieldpass = ["microseconds"]
+  namepass = ["estat_*"]
+  fieldexclude = ["microseconds"]
 
 # End of Storage I/O section
 ##############################################################################
