@@ -95,6 +95,7 @@ fi
 ADMIN_TOKEN=""
 ORG_ID=""
 BUCKET_ID=""
+SUPPORT_BUCKET_ID=""
 
 if [[ -f "$INFLUXDB_SETUP_STATE_FILE" ]]; then
 	while IFS= read -r line; do
@@ -104,9 +105,11 @@ if [[ -f "$INFLUXDB_SETUP_STATE_FILE" ]]; then
 			ADMIN_TOKEN)             ADMIN_TOKEN="$value" ;;
 			ORG_ID)                  ORG_ID="$value" ;;
 			BUCKET_ID)               BUCKET_ID="$value" ;;
+			SUPPORT_BUCKET_ID)       SUPPORT_BUCKET_ID="$value" ;;
 			INFLUXDB_ADMIN_PASSWORD) INFLUXDB_ADMIN_PASSWORD="$value" ;;
 			WRITE_TOKEN)             WRITE_TOKEN="$value" ;;
 			READ_TOKEN)              READ_TOKEN="$value" ;;
+			SUPPORT_WRITE_TOKEN)     SUPPORT_WRITE_TOKEN="$value" ;;
 		esac
 	done <"$INFLUXDB_SETUP_STATE_FILE"
 else
@@ -137,11 +140,25 @@ else
 	umask "$old_umask"
 fi
 
+#
+# Create the support_metrics bucket (skipped if already persisted in state).
+#
+if [[ -z "$SUPPORT_BUCKET_ID" ]]; then
+	SUPPORT_BUCKET_RESPONSE=$(influx_post "/api/v2/buckets" "{
+		\"orgID\": \"$ORG_ID\",
+		\"name\": \"$INFLUXDB_SUPPORT_BUCKET\",
+		\"retentionRules\": [{\"type\": \"expire\", \"everySeconds\": $INFLUXDB_SUPPORT_RETENTION_SECONDS}]
+	}" "$ADMIN_TOKEN") || exit 1
+	SUPPORT_BUCKET_ID=$(json_field "$SUPPORT_BUCKET_RESPONSE" "['id']") || exit 1
+	printf 'SUPPORT_BUCKET_ID=%s\n' "$SUPPORT_BUCKET_ID" >>"$INFLUXDB_SETUP_STATE_FILE"
+fi
+
 # Token creation is guarded so that on crash-resume (setup state exists but
 # meta file not yet written), we reuse already-created tokens rather than
 # creating orphaned duplicates in InfluxDB on each retry.
 WRITE_TOKEN="${WRITE_TOKEN:-}"
 READ_TOKEN="${READ_TOKEN:-}"
+SUPPORT_WRITE_TOKEN="${SUPPORT_WRITE_TOKEN:-}"
 
 #
 # Create a write-only token for Telegraf (skipped if already persisted in state).
@@ -174,9 +191,26 @@ if [[ -z "$READ_TOKEN" ]]; then
 fi
 
 #
-# Write the [[outputs.influxdb_v2]] stanza to a dedicated telegraf output file
-# and enable it via the INFLUXDB_ENABLED flag. The flag is read by
-# delphix-telegraf-service to conditionally include this output.
+# Create a write-only token for the support_metrics bucket (skipped if already persisted).
+#
+if [[ -z "$SUPPORT_WRITE_TOKEN" ]]; then
+	SUPPORT_WRITE_TOKEN_RESPONSE=$(influx_post "/api/v2/authorizations" "{
+		\"orgID\": \"$ORG_ID\",
+		\"description\": \"telegraf-support-write-token\",
+		\"permissions\": [
+			{\"action\": \"write\", \"resource\": {\"type\": \"buckets\", \"id\": \"$SUPPORT_BUCKET_ID\", \"orgID\": \"$ORG_ID\"}}
+		]
+	}" "$ADMIN_TOKEN") || exit 1
+	SUPPORT_WRITE_TOKEN=$(json_field "$SUPPORT_WRITE_TOKEN_RESPONSE" "['token']") || exit 1
+	printf 'SUPPORT_WRITE_TOKEN=%s\n' "$SUPPORT_WRITE_TOKEN" >>"$INFLUXDB_SETUP_STATE_FILE"
+fi
+
+#
+# Write two [[outputs.influxdb_v2]] stanzas to a dedicated telegraf output file:
+#   - default bucket: Grafana-facing measurements (cpu, mem, disk, net, zfs, estat_*, hist_estat_*)
+#   - support_metrics bucket: operational measurements not displayed in Grafana
+#     (tcp_stats, processes, system, procstat, agg_*)
+# The flag is read by delphix-telegraf-service to conditionally include this output.
 #
 cat >"$INFLUXDB_OUTPUT" <<EOF
 [[outputs.influxdb_v2]]
@@ -184,8 +218,16 @@ cat >"$INFLUXDB_OUTPUT" <<EOF
   token = "$WRITE_TOKEN"
   organization = "$INFLUXDB_ORG"
   bucket = "$INFLUXDB_BUCKET"
+  namedrop = ["tcp_stats", "processes", "system", "procstat", "agg_*"]
+
+[[outputs.influxdb_v2]]
+  urls = ["http://127.0.0.1:8086"]
+  token = "$SUPPORT_WRITE_TOKEN"
+  organization = "$INFLUXDB_ORG"
+  bucket = "$INFLUXDB_SUPPORT_BUCKET"
+  namepass = ["tcp_stats", "processes", "system", "procstat", "agg_*"]
 EOF
-# Enforce restrictive permissions so the write token is not world-readable.
+# Enforce restrictive permissions so the write tokens are not world-readable.
 chmod 640 "$INFLUXDB_OUTPUT"
 touch "$INFLUXDB_FLAG"
 
@@ -201,6 +243,7 @@ tmp_meta="$(mktemp "${INFLUXDB_META_FILE}.XXXXXX")"
 cat >"$tmp_meta" <<EOF
 INFLUXDB_ORG=$INFLUXDB_ORG
 INFLUXDB_BUCKET=$INFLUXDB_BUCKET
+INFLUXDB_SUPPORT_BUCKET=$INFLUXDB_SUPPORT_BUCKET
 INFLUXDB_ADMIN_USER=$INFLUXDB_ADMIN_USER
 INFLUXDB_ADMIN_PASSWORD=$INFLUXDB_ADMIN_PASSWORD
 INFLUXDB_WRITE_TOKEN=$WRITE_TOKEN
