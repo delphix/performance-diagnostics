@@ -32,8 +32,10 @@
 
 # Get mount point stats
 [[inputs.disk]]
+  interval = "60s"
   mount_points = ["/","/domain0"]
   tagexclude = ["fstype", "mode"]
+  fieldpass = ["used", "free", "total"]
 
 # Get disk I/O stats for whole disks only — partitions add cardinality without
 # diagnostic value and account for ~30% of diskio/agg_diskio line volume.
@@ -43,11 +45,14 @@
 #   sd*[0-9]*  — SCSI/SATA partitions (sda1, sdb2, etc.)
 # wwid is a redundant 100+ char tag; the short-form name tag is sufficient.
 [[inputs.diskio]]
+  interval = "60s"
   tagdrop = {name = ["zd*", "*p[0-9]*", "sd*[0-9]*"]}
   tagexclude = ["wwid"]
+  fieldpass = ["reads", "writes", "read_bytes", "write_bytes", "read_time", "write_time", "iops_in_progress"]
 
 # Get Memory stats
 [[inputs.mem]]
+  fieldpass = ["used", "available", "total", "free", "cached", "buffered", "dirty", "slab"]
 
 # Get some network interface stats
 [[inputs.net]]
@@ -98,7 +103,31 @@
 # arcstats_l2_* fields are L2ARC stats — unused on all appliances (no L2ARC).
 [[inputs.zfs]]
   interval = "1m"
-  fielddrop = ["arcstats_l2_*"]
+  fieldpass = [
+    "arcstats_anon_data", "arcstats_anon_evictable_data",
+    "arcstats_anon_evictable_metadata", "arcstats_anon_metadata",
+    "arcstats_arc_need_free", "arcstats_arc_no_grow", "arcstats_arc_prune",
+    "arcstats_arc_sys_free", "arcstats_async_upgrade_sync",
+    "arcstats_c", "arcstats_data_size",
+    "arcstats_demand_data_hits", "arcstats_demand_data_misses",
+    "arcstats_demand_hit_predictive_prefetch",
+    "arcstats_evict_not_enough", "arcstats_evict_skip",
+    "arcstats_hits", "arcstats_misses",
+    "arcstats_memory_available_bytes", "arcstats_memory_direct_count",
+    "arcstats_memory_free_bytes", "arcstats_memory_indirect_count",
+    "arcstats_metadata_size",
+    "arcstats_mfu_data", "arcstats_mfu_evictable_data",
+    "arcstats_mfu_evictable_metadata", "arcstats_mfu_ghost_hits",
+    "arcstats_mfu_hits", "arcstats_mfu_metadata",
+    "arcstats_mru_data", "arcstats_mru_evictable_data",
+    "arcstats_mru_evictable_metadata", "arcstats_mru_ghost_hits",
+    "arcstats_mru_hits", "arcstats_mru_metadata",
+    "arcstats_prefetch_data_hits", "arcstats_prefetch_data_misses",
+    "arcstats_size",
+    "zil_commit_count", "zil_itx_count", "zil_commit_stall_count",
+    "zfetchstats_hits", "zfetchstats_misses",
+    "dmu_tx_dirty_throttle", "dmu_tx_delay"
+  ]
 
 # Detailed ZFS pool metrics from "zpool_influxdb" (noisy)
 #[[inputs.exec]]

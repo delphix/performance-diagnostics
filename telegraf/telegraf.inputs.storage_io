@@ -87,8 +87,9 @@ def apply(metric):
         if len(parts) == 2:
             m = deepcopy(metric)
             m.tags["le"] = parts[0]
+            for k in list(m.fields.keys()):
+                m.fields.pop(k)
             m.fields["count"] = int(parts[1])
-            m.fields.pop("microseconds")
             result.append(m)
 
     return result if result else [metric]
