@@ -218,14 +218,14 @@ cat >"$INFLUXDB_OUTPUT" <<EOF
   token = "$WRITE_TOKEN"
   organization = "$INFLUXDB_ORG"
   bucket = "$INFLUXDB_BUCKET"
-  namedrop = ["tcp_stats", "processes", "system", "procstat", "agg_*"]
+  namedrop = ["processes", "system", "procstat", "agg_*"]
 
 [[outputs.influxdb_v2]]
   urls = ["http://127.0.0.1:8086"]
   token = "$SUPPORT_WRITE_TOKEN"
   organization = "$INFLUXDB_ORG"
   bucket = "$INFLUXDB_SUPPORT_BUCKET"
-  namepass = ["tcp_stats", "processes", "system", "procstat", "agg_*"]
+  namepass = ["processes", "system", "procstat", "agg_*"]
 EOF
 # Enforce restrictive permissions so the write tokens are not world-readable.
 chmod 640 "$INFLUXDB_OUTPUT"
