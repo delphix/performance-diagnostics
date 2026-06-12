@@ -4,15 +4,6 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-/*
- * On some kernel versions (e.g. 6.14) linux/bpf.h is pulled in transitively
- * via metaslab.h -> spa.h -> zfs_context.h -> vfs.h -> security.h and
- * contains sizeof(struct bpf_wq) where bpf_wq is only forward-declared,
- * causing a compile error (DLPX-96701).  Blocking security.h (which this BPF
- * program does not need) stops the chain without touching linux/bpf.h itself.
- */
-#define __LINUX_SECURITY_H
-
 #include <sys/metaslab.h>
 #include <sys/metaslab_impl.h>
 #include <sys/vdev_impl.h>
