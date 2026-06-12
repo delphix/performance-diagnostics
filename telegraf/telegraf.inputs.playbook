@@ -91,9 +91,10 @@
   ]
   json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
 
-# Collect output from "estat metaslab-alloc -jm 10"
+# Collect output from "estat metaslab-alloc -jm 10" via wrapper script.
+# The wrapper filters out metrics with garbage "name" tags (DLPX-88427).
 [[inputs.execd]]
-  command = ["estat", "metaslab-alloc", "-jm", "10"]
+  command = ["/etc/telegraf/metaslab-alloc-stats.sh"]
   name_override = "estat_metaslab-alloc"
   signal = "none"
   restart_delay = "30s"
