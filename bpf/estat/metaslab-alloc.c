@@ -12,9 +12,7 @@
 #define VD_NAME_SIZE 32
 typedef struct {
 	u64 ts;
-	u64 size;
 	u64 asize;
-	u64 alloc_time;
 	char vd_name[VD_NAME_SIZE];
 } data_t;
 
@@ -40,6 +38,21 @@ equal_to_pool(char *str)
 	return (true);
 }
 
+/*
+ * In ZFS 2.4.99+ (2026.3 and later) the allocation path no longer goes
+ * through metaslab_alloc_dva at all — metaslab_group_alloc is called
+ * directly by a different caller.  We therefore use metaslab_group_alloc
+ * as both the start-timing and pool-filter point.  The pool name is
+ * available via mg->mg_class->mc_spa->spa_name.
+ *
+ * On older ZFS versions metaslab_alloc_dva is still the outer entry point.
+ * We probe it only to set up the data_map entry that metaslab_group_alloc
+ * then populates with vdev information.  If metaslab_alloc_dva is not
+ * kprobeable (BPF.get_kprobe_functions returns false), estat.py prints a
+ * warning and skips the attach — metaslab_group_alloc_entry handles that
+ * case via the mc_spa pool check instead.
+ */
+
 // @@ kprobe|metaslab_alloc_dva|metaslab_alloc_dva_entry
 int
 metaslab_alloc_dva_entry(struct pt_regs *ctx,
@@ -52,7 +65,6 @@ metaslab_alloc_dva_entry(struct pt_regs *ctx,
 		return (0);
 
 	data.ts = bpf_ktime_get_ns();
-	data.size = psize;
 
 	data_map.update(&tid, &data);
 
@@ -67,18 +79,49 @@ metaslab_group_alloc_entry(struct pt_regs *ctx,
 	u32 tid = bpf_get_current_pid_tgid();
 	data_t *data = data_map.lookup(&tid);
 
-	if (data == NULL || data->ts == 0)
-		return (0);
-
-	data->asize = asize;
-	data->alloc_time = bpf_ktime_get_ns();
-
-	if (mg->mg_vd->vdev_path != NULL) {
-		bpf_probe_read_str(data->vd_name,
-		    sizeof(data->vd_name), mg->mg_vd->vdev_path);
+	if (data != NULL && data->ts != 0) {
+		/*
+		 * Older path: metaslab_alloc_dva_entry already created the
+		 * entry and set the start timestamp.  Just fill in vdev info.
+		 */
+		data->asize = asize;
+		if (mg->mg_vd->vdev_path != NULL) {
+			bpf_probe_read_str(data->vd_name,
+			    sizeof(data->vd_name), mg->mg_vd->vdev_path);
+		} else {
+			bpf_probe_read_str(data->vd_name,
+			    sizeof(data->vd_name),
+			    mg->mg_vd->vdev_ops->vdev_op_type);
+		}
 	} else {
-		bpf_probe_read_str(data->vd_name,
-		    sizeof(data->vd_name), mg->mg_vd->vdev_ops->vdev_op_type);
+		/*
+		 * Newer path: metaslab_alloc_dva is not in the call chain.
+		 * Create the entry here, filtering by pool via mc_spa.
+		 * Read each pointer level explicitly: BCC's automatic
+		 * three-level dereference (mg->mg_class->mc_spa->spa_name)
+		 * does not produce a usable address for bpf_probe_read.
+		 */
+		metaslab_class_t *mc;
+		spa_t *spa;
+		bpf_probe_read(&mc, sizeof(mc), &mg->mg_class);
+		bpf_probe_read(&spa, sizeof(spa), &mc->mc_spa);
+		if (!equal_to_pool(spa->spa_name))
+			return (0);
+
+		data_t d = {};
+		d.ts    = bpf_ktime_get_ns();
+		d.asize = asize;
+
+		if (mg->mg_vd->vdev_path != NULL) {
+			bpf_probe_read_str(d.vd_name,
+			    sizeof(d.vd_name), mg->mg_vd->vdev_path);
+		} else {
+			bpf_probe_read_str(d.vd_name,
+			    sizeof(d.vd_name),
+			    mg->mg_vd->vdev_ops->vdev_op_type);
+		}
+
+		data_map.update(&tid, &d);
 	}
 
 	return (0);
@@ -97,19 +140,23 @@ metaslab_group_alloc_exit(struct pt_regs *ctx)
 	if (data == NULL || data->ts == 0)
 		return (0);
 
-	if (PT_REGS_RC(ctx) == -1ULL) {
+	/*
+	 * metaslab_group_alloc returns a metaslab_t * (or similar pointer)
+	 * in both old and new ZFS.  NULL (0) = failure, non-NULL = success.
+	 * The old code checked for -1ULL which was never a valid failure
+	 * value; corrected here based on observed probe data (all successful
+	 * allocations return non-zero).
+	 */
+	if (PT_REGS_RC(ctx) == 0) {
 		axis = failure;
 	} else {
 		axis = success;
 	}
 
 	/*
-	 * On some engine versions a kernel bug (DLPX-88427) causes vd_name to
-	 * contain raw memory bytes instead of a vdev path or type string.  The
-	 * first byte of any valid name is either '/' (device path) or an ASCII
-	 * letter (vdev type like "mirror").  If it falls outside printable ASCII
-	 * (0x20–0x7e) the name is garbage; overwrite it with a safe fallback so
-	 * we never emit unparseable metric names.
+	 * Guard against garbage in vd_name (DLPX-88427): a kernel bug on
+	 * some engine versions causes raw memory bytes to appear here.
+	 * Valid vdev names start with '/' or an ASCII letter (0x20-0x7e).
 	 */
 	if (data->vd_name[0] < 0x20 || data->vd_name[0] > 0x7e) {
 		char unknown[] = "unknown";
@@ -119,9 +166,7 @@ metaslab_group_alloc_exit(struct pt_regs *ctx)
 	AGGREGATE_DATA(data->vd_name, axis,
 		bpf_ktime_get_ns() - data->ts, data->asize);
 
-	data->asize = 0;
-	data->alloc_time = 0;
-	data->vd_name[0] = '\0';
+	data_map.delete(&tid);
 
 	return (0);
 }
@@ -137,17 +182,13 @@ metaslab_alloc_dva_exit(struct pt_regs *ctx,
 	if (data == NULL || data->ts == 0)
 		return (0);
 
-	if (PT_REGS_RC(ctx) == 0)
-		return (0);
-
-	char name[] = "allocation failures";
-	char axis = 0;
-	AGGREGATE_DATA(name, &axis,
-		bpf_ktime_get_ns() - data->ts, data->size);
-
+	/*
+	 * On the older code path, metaslab_alloc_dva_entry created the map
+	 * entry but metaslab_group_alloc_exit will have already deleted it
+	 * on success.  If we arrive here with a live entry it means the
+	 * overall DVA allocation failed; clean up the map.
+	 */
 	data->ts = 0;
-	data->size = 0;
-
 	data_map.delete(&tid);
 
 	return (0);
