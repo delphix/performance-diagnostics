@@ -12,9 +12,8 @@
 #define VD_NAME_SIZE 32
 typedef struct {
 	u64 ts;
-	u64 size;      /* psize stored by metaslab_alloc_dva_entry (old path) */
+	u64 size;	/* psize from metaslab_alloc_dva_range_entry */
 	u64 asize;
-	u8  dva_owned; /* 1 if created by metaslab_alloc_dva_entry (old path) */
 	char vd_name[VD_NAME_SIZE];
 } data_t;
 
@@ -41,29 +40,31 @@ equal_to_pool(char *str)
 }
 
 /*
- * In ZFS 2.4.99+ (2026.3 and later) the allocation path no longer goes
- * through metaslab_alloc_dva at all — metaslab_group_alloc is called
- * directly by a different caller.  We therefore use metaslab_group_alloc
- * as both the start-timing and pool-filter point.  The pool name is
- * available via mg->mg_class->mc_spa->spa_name.
+ * metaslab_alloc_dva_range() is the per-DVA entry point in the write path
+ * for ZFS versions that have it (Delphix 2026.3 / ZFS 2.4.99+).  It receives
+ * spa_t * as its first argument, making pool filtering straightforward.
  *
- * On older ZFS versions metaslab_alloc_dva is still the outer entry point.
- * We probe it to set up the data_map entry (dva_owned=1) and store psize so
- * metaslab_alloc_dva_exit can emit an "allocation failures" metric if the
- * overall DVA allocation fails.  metaslab_group_alloc_entry then populates
- * vdev information into the same entry.
+ * Call chain:
+ *   metaslab_alloc()
+ *     -> metaslab_alloc_range()
+ *       -> metaslab_alloc_dva_range()   <- outer probe (entry/exit)
+ *           -> metaslab_group_alloc()   <- inner probe (entry/exit)
  *
- * Lifetime of map entries:
- *   Old path: created by metaslab_alloc_dva_entry, deleted by
- *             metaslab_alloc_dva_exit (metaslab_group_alloc_exit only
- *             clears per-group fields so multiple groups can be tried).
- *   New path: created and deleted by metaslab_group_alloc_entry/exit pair
- *             (no outer dva probe fires).
+ * metaslab_alloc_dva_range() may call metaslab_group_alloc() multiple times
+ * (once per metaslab group tried).  We therefore emit a metric on each
+ * metaslab_group_alloc_exit and reset the per-group fields so the next
+ * attempt gets a fresh vdev name, leaving the outer entry alive until
+ * metaslab_alloc_dva_range_exit cleans it up.
+ *
+ * metaslab_alloc_dva() (the old outer entry point, now only used in
+ * vdev_removal.c) is no longer probed.  If this script is run on an older
+ * ZFS that lacks metaslab_alloc_dva_range, estat(8) will print a WARNING and
+ * skip those probes — no data will be collected.
  */
 
-// @@ kprobe|metaslab_alloc_dva|metaslab_alloc_dva_entry
+// @@ kprobe|metaslab_alloc_dva_range|metaslab_alloc_dva_range_entry
 int
-metaslab_alloc_dva_entry(struct pt_regs *ctx,
+metaslab_alloc_dva_range_entry(struct pt_regs *ctx,
     spa_t *spa, metaslab_class_t *mc, uint64_t psize)
 {
 	u32 tid = bpf_get_current_pid_tgid();
@@ -72,9 +73,8 @@ metaslab_alloc_dva_entry(struct pt_regs *ctx,
 	if (!equal_to_pool(spa->spa_name))
 		return (0);
 
-	data.ts        = bpf_ktime_get_ns();
-	data.size      = psize;
-	data.dva_owned = 1;
+	data.ts   = bpf_ktime_get_ns();
+	data.size = psize;
 
 	data_map.update(&tid, &data);
 
@@ -89,54 +89,18 @@ metaslab_group_alloc_entry(struct pt_regs *ctx,
 	u32 tid = bpf_get_current_pid_tgid();
 	data_t *data = data_map.lookup(&tid);
 
-	if (data != NULL && data->dva_owned) {
-		/*
-		 * Older path: metaslab_alloc_dva_entry already created the
-		 * entry and set the start timestamp.  Just fill in vdev info.
-		 */
-		data->asize = asize;
-		if (mg->mg_vd->vdev_path != NULL) {
-			bpf_probe_read_str(data->vd_name,
-			    sizeof(data->vd_name), mg->mg_vd->vdev_path);
-		} else {
-			bpf_probe_read_str(data->vd_name,
-			    sizeof(data->vd_name),
-			    mg->mg_vd->vdev_ops->vdev_op_type);
-		}
+	if (data == NULL || data->ts == 0)
+		return (0);
+
+	data->asize = asize;
+
+	if (mg->mg_vd->vdev_path != NULL) {
+		bpf_probe_read_str(data->vd_name,
+		    sizeof(data->vd_name), mg->mg_vd->vdev_path);
 	} else {
-		/*
-		 * Newer path: metaslab_alloc_dva is not in the call chain.
-		 * Create the entry here, filtering by pool via mc_spa.
-		 * Read each pointer level explicitly: BCC's automatic
-		 * three-level dereference (mg->mg_class->mc_spa->spa_name)
-		 * does not produce a usable address for bpf_probe_read.
-		 */
-		metaslab_class_t *mc = NULL;
-		spa_t *spa = NULL;
-		bpf_probe_read(&mc, sizeof(mc), &mg->mg_class);
-		if (!mc)
-			return (0);
-		bpf_probe_read(&spa, sizeof(spa), &mc->mc_spa);
-		if (!spa)
-			return (0);
-		if (!equal_to_pool(spa->spa_name))
-			return (0);
-
-		data_t d = {};
-		d.ts    = bpf_ktime_get_ns();
-		d.asize = asize;
-		/* dva_owned stays 0: this entry is owned by group entry/exit */
-
-		if (mg->mg_vd->vdev_path != NULL) {
-			bpf_probe_read_str(d.vd_name,
-			    sizeof(d.vd_name), mg->mg_vd->vdev_path);
-		} else {
-			bpf_probe_read_str(d.vd_name,
-			    sizeof(d.vd_name),
-			    mg->mg_vd->vdev_ops->vdev_op_type);
-		}
-
-		data_map.update(&tid, &d);
+		bpf_probe_read_str(data->vd_name,
+		    sizeof(data->vd_name),
+		    mg->mg_vd->vdev_ops->vdev_op_type);
 	}
 
 	return (0);
@@ -155,10 +119,6 @@ metaslab_group_alloc_exit(struct pt_regs *ctx)
 	if (data == NULL || data->ts == 0)
 		return (0);
 
-	/*
-	 * metaslab_group_alloc returns a metaslab_t * (or similar pointer)
-	 * in both old and new ZFS.  NULL (0) = failure, non-NULL = success.
-	 */
 	if (PT_REGS_RC(ctx) == 0) {
 		axis = failure;
 	} else {
@@ -169,10 +129,9 @@ metaslab_group_alloc_exit(struct pt_regs *ctx)
 	 * Guard against garbage in vd_name (DLPX-88427): a kernel bug on
 	 * some engine versions causes raw memory bytes to appear here.
 	 * A single non-printable byte anywhere in the string breaks JSON
-	 * output (Python decodes with backslashreplace and the result is
-	 * concatenated into JSON without escaping).  Scan all bytes up to
-	 * the first NUL; replace the whole name with "unknown" if the
-	 * string is empty or any byte is outside printable ASCII (0x20-0x7e).
+	 * output.  Scan all bytes up to the first NUL; replace the whole
+	 * name with "unknown" if empty or any byte is outside printable
+	 * ASCII (0x20-0x7e).
 	 */
 	bool vd_valid = (data->vd_name[0] != '\0');
 #pragma unroll
@@ -191,32 +150,21 @@ metaslab_group_alloc_exit(struct pt_regs *ctx)
 	AGGREGATE_DATA(data->vd_name, axis,
 		bpf_ktime_get_ns() - data->ts, data->asize);
 
-	if (data->dva_owned) {
-		/*
-		 * Old path: metaslab_alloc_dva may call metaslab_group_alloc
-		 * multiple times (one per group tried).  Reset per-group fields
-		 * so the next attempt gets a fresh vdev name, but leave the
-		 * entry alive so metaslab_alloc_dva_exit can record an
-		 * "allocation failures" metric if the overall DVA fails.
-		 */
-		data->asize      = 0;
-		data->vd_name[0] = '\0';
-	} else {
-		/* New path: no outer dva exit will run; clean up now. */
-		data_map.delete(&tid);
-	}
+	/*
+	 * Reset per-group fields so that if metaslab_alloc_dva_range retries
+	 * with another group, metaslab_group_alloc_entry gets a clean slate.
+	 * Leave the entry alive — metaslab_alloc_dva_range_exit owns cleanup.
+	 */
+	data->asize      = 0;
+	data->vd_name[0] = '\0';
 
 	return (0);
 }
 
-// @@ kretprobe|metaslab_alloc_dva|metaslab_alloc_dva_exit
+// @@ kretprobe|metaslab_alloc_dva_range|metaslab_alloc_dva_range_exit
 int
-metaslab_alloc_dva_exit(struct pt_regs *ctx,
-    spa_t *spa, metaslab_class_t *mc, uint64_t psize)
+metaslab_alloc_dva_range_exit(struct pt_regs *ctx)
 {
-	/* spa, mc, psize match the probed function signature but are unused. */
-	(void)spa; (void)mc; (void)psize;
-
 	u32 tid = bpf_get_current_pid_tgid();
 	data_t *data = data_map.lookup(&tid);
 
@@ -224,11 +172,10 @@ metaslab_alloc_dva_exit(struct pt_regs *ctx,
 		return (0);
 
 	/*
-	 * A live entry exists on both success and failure paths; only the
-	 * return code determines whether to emit an "allocation failures"
-	 * metric (non-zero RC = failure).  psize is read from data->size
-	 * rather than the kretprobe argument registers, which may be
-	 * clobbered by the time the function returns.
+	 * Non-zero return means the overall DVA allocation failed (no group
+	 * succeeded).  Emit an "allocation failures" metric using the psize
+	 * stored at entry time; the kretprobe argument registers may be
+	 * clobbered so we read from data->size instead.
 	 */
 	if (PT_REGS_RC(ctx) != 0) {
 		char name[] = "allocation failures";
