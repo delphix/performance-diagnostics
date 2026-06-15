@@ -13,11 +13,12 @@
 # need to rename a couple files, so do that here.
 #
 override_dh_auto_build:
-	mkdir -p build/cmd/
+	mkdir -p build/cmd/ build/influxdb/
 	cp cmd/estat.py build/cmd/estat
 	cp cmd/stbtrace.py build/cmd/stbtrace
 	cp cmd/nfs_threads.py build/cmd/nfs_threads
 	cp cmd/dsp.py build/cmd/dsp
+	cp influxdb/influxdb-nginx.conf build/influxdb/influxdb.conf
 
 override_dh_auto_install:
 	dh_install build/cmd/* /usr/bin
@@ -26,3 +27,7 @@ override_dh_auto_install:
 	dh_install telegraf/delphix-telegraf-service telegraf/perf_playbook /usr/bin
 	dh_install telegraf/delphix-telegraf.service /lib/systemd/system
 	dh_install telegraf/telegraf* telegraf/*.sh /etc/telegraf
+	dh_install influxdb/delphix-influxdb-service influxdb/delphix-influxdb-init influxdb/perf_influxdb /usr/bin
+	dh_install influxdb/delphix-influxdb.service /lib/systemd/system
+	dh_install influxdb/influxdb.toml influxdb/influxdb-init.conf /etc/influxdb
+	dh_install build/influxdb/influxdb.conf /opt/delphix/server/etc/nginx/conf.d
