@@ -11,53 +11,20 @@
 ###############################################################################
 #                            OUTPUT PLUGINS                                   #
 ###############################################################################
-# Define the main metric output file, excluding aggregated stats and 
-# Performance Playbook (estat) data.
-[[outputs.file]]
-  files = ["/var/log/telegraf/metrics.json"]
-  rotation_max_size = "50MB"
-  rotation_max_archives = 9
-  data_format = "json"
-  namedrop = ["*estat_*", "agg_*", "zfs", "zpool*", "zcache*", "docker*"]
-
-# Define output file for ZFS related metrics
-[[outputs.file]]
-  files = ["/var/log/telegraf/metrics_zfs.json"]
-  rotation_max_size = "30MB"
-  rotation_max_archives = 5
-  data_format = "json"
-  namepass = ["zpool*", "zcache*", "zfs"]
-
-# Define output file for Performance Playbook (estat) metrics
-[[outputs.file]]
-  files = ["/var/log/telegraf/metrics_estat.json"]
-  rotation_max_size = "30MB"
-  rotation_max_archives = 5
-  data_format = "json"
-  namepass = ["*estat_*"]
-
-# Define output file for aggregate statistics
-[[outputs.file]]
-  files = ["/var/log/telegraf/metric_aggregates.json"]
-  rotation_max_size = "30MB"
-  rotation_max_archives = 5
-  data_format = "json"
-  namepass = ["agg_*"]
-
-# Enable Live Monitoring, intended for internal Delphix use only:
-#[[outputs.influxdb]]
-#  urls = ["http://dbsvr.company.com:8086"]
-#  database = "live_metrics"
-#  skip_database_creation = true
-#  data_format = "influx"
+# All metrics are ingested into InfluxDB. The output stanza is written by
+# delphix-influxdb-init to /etc/telegraf/telegraf.outputs.influxdb and
+# appended here by delphix-telegraf-service when InfluxDB is enabled.
+# Use 'perf_influxdb enable|disable' to toggle and restart Telegraf.
 
 ###############################################################################
 #                            INPUT PLUGINS                                    #
 ###############################################################################
 
-# Get CPU usage
+# Get CPU usage — only cpu-total, not per-core (reduces data volume on
+# many-CPU engines; agg_cpu automatically inherits this restriction).
+# percpu defaults to true so must be explicitly set to false.
 [[inputs.cpu]]
-  percpu = true
+  percpu = false
   totalcpu = true
   collect_cpu_time = false
   report_active = false
@@ -65,24 +32,50 @@
 
 # Get mount point stats
 [[inputs.disk]]
+  interval = "60s"
   mount_points = ["/","/domain0"]
+  tagexclude = ["fstype", "mode"]
+  fieldpass = ["used", "free", "total"]
 
-# Get disk I/O stats
+# Get disk I/O stats for whole disks only — partitions add cardinality without
+# diagnostic value and account for ~30% of diskio/agg_diskio line volume.
+# Excluded:
+#   zd*        — ZFS zvol internal block devices
+#   *p[0-9]*   — NVMe partitions (nvme0n1p1, nvme0n1p9, etc.)
+#   sd*[0-9]*  — SCSI/SATA partitions (sda1, sdb2, etc.)
+# wwid is a redundant 100+ char tag; the short-form name tag is sufficient.
 [[inputs.diskio]]
-
-# Track stats for the current metric files
-[[inputs.filestat]]
-  files = ["/var/log/telegraf/metrics.json",
-  	   "/var/log/telegraf/metrics_estat.json",
-  	   "/var/log/telegraf/metrics_zfs.json",
-  	   "/var/log/telegraf/metric_aggregates.json"]
+  interval = "60s"
+  tagdrop = {name = ["zd*", "*p[0-9]*", "sd*[0-9]*"]}
+  tagexclude = ["wwid"]
+  fieldpass = ["reads", "writes", "read_bytes", "write_bytes", "read_time", "write_time", "iops_in_progress"]
 
 # Get Memory stats
 [[inputs.mem]]
+  fieldpass = ["used", "available", "total", "free", "cached", "buffered", "dirty", "slab"]
 
 # Get some network interface stats
 [[inputs.net]]
   fieldpass = ["tcp*","bytes*","packets*","err*","drop*"]
+
+# Per-endpoint TCP stats (bytes, RTT, window sizes) via connstat.
+# Aggregated by (laddr, raddr, service) to mirror the aggregation in
+# LocalTCPStatsCollector — avoids cardinality explosion on Oracle dNFS
+# engines (hundreds of connections per VDB host) and Elastic Data engines
+# (many connections per object storage endpoint IP).
+# Cumulative fields (inbytes, outbytes, etc.) are summed; window/RTT fields
+# are averaged; connections = number of TCP connections aggregated.
+[[inputs.execd]]
+  command = ["/etc/telegraf/connstat-stats.sh"]
+  name_override = "tcp_stats"
+  signal = "none"
+  restart_delay = "30s"
+  data_format = "csv"
+  csv_delimiter = ","
+  csv_trim_space = true
+  csv_column_names = ["laddr", "raddr", "service", "inbytes", "outbytes", "retranssegs", "suna", "unsent", "swnd", "cwnd", "rwnd", "rtt", "connections"]
+  csv_column_types = ["string", "string", "string", "int", "int", "int", "int", "int", "int", "int", "int", "int", "int"]
+  csv_tag_columns = ["laddr", "raddr", "service"]
 
 # Track CPU and Memory for the "delphix-mgmt" service (and children).
 [[inputs.procstat]]
@@ -90,6 +83,7 @@
   include_systemd_children = true
   namedrop = ["procstat_lookup"]
   fieldpass = ["memory_usage", "cpu_usage", "memory_rss"]
+  tagexclude = ["cgroup_full"]
 
 # Track CPU and Memory for the "zfs-object-agent" service (and children).
 [[inputs.procstat]]
@@ -97,19 +91,43 @@
   include_systemd_children = true
   namedrop = ["procstat_lookup"]
   fieldpass = ["memory_usage", "cpu_usage", "memory_rss"]
+  tagexclude = ["cgroup_full"]
 
 # Get process counts
 [[inputs.processes]]
-
-# Get swap memory usage
-[[inputs.swap]]
 
 # Get misc 'other' stats (load and uptime)
 [[inputs.system]]
 
 # ZFS kstats (arcstat, abdstat, zfetch, etc)
+# arcstats_l2_* fields are L2ARC stats — unused on all appliances (no L2ARC).
 [[inputs.zfs]]
   interval = "1m"
+  fieldpass = [
+    "arcstats_anon_data", "arcstats_anon_evictable_data",
+    "arcstats_anon_evictable_metadata", "arcstats_anon_metadata",
+    "arcstats_arc_need_free", "arcstats_arc_no_grow", "arcstats_arc_prune",
+    "arcstats_arc_sys_free", "arcstats_async_upgrade_sync",
+    "arcstats_c", "arcstats_data_size",
+    "arcstats_demand_data_hits", "arcstats_demand_data_misses",
+    "arcstats_demand_hit_predictive_prefetch",
+    "arcstats_evict_not_enough", "arcstats_evict_skip",
+    "arcstats_hits", "arcstats_misses",
+    "arcstats_memory_available_bytes", "arcstats_memory_direct_count",
+    "arcstats_memory_free_bytes", "arcstats_memory_indirect_count",
+    "arcstats_metadata_size",
+    "arcstats_mfu_data", "arcstats_mfu_evictable_data",
+    "arcstats_mfu_evictable_metadata", "arcstats_mfu_ghost_hits",
+    "arcstats_mfu_hits", "arcstats_mfu_metadata",
+    "arcstats_mru_data", "arcstats_mru_evictable_data",
+    "arcstats_mru_evictable_metadata", "arcstats_mru_ghost_hits",
+    "arcstats_mru_hits", "arcstats_mru_metadata",
+    "arcstats_prefetch_data_hits", "arcstats_prefetch_data_misses",
+    "arcstats_size",
+    "zil_commit_count", "zil_itx_count", "zil_commit_stall_count",
+    "zfetchstats_hits", "zfetchstats_misses",
+    "dmu_tx_dirty_throttle", "dmu_tx_delay"
+  ]
 
 # Detailed ZFS pool metrics from "zpool_influxdb" (noisy)
 #[[inputs.exec]]
@@ -127,5 +145,5 @@
   drop_original = false
   stats = ["min", "max", "mean", "stdev"]
   name_prefix = "agg_"
-  namepass = ["cpu","disk","diskio","mem","net","processes","system","swap"]
+  namepass = ["cpu","disk","diskio","mem","net","processes","system"]
 
