@@ -51,8 +51,9 @@
     integer = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)"]
 
 # Clone estat_* measurements as hist_estat_* to hold histogram data only.
-# microseconds is removed from the originals (order 2 below) so it lives in
-# hist_estat_* exclusively — no duplication.
+# Rows without a microseconds field (e.g. name=total summary rows) have no
+# histogram data; the Starlark processor below drops those clones so they
+# don't duplicate the summary stats already present in estat_*.
 # Keeps the original format "{20000,5},{30000,15}" compatible with import code.
 [[processors.clone]]
   order = 1
@@ -79,7 +80,7 @@
 def apply(metric):
     ms = metric.fields.get("microseconds")
     if ms == None:
-        return [metric]
+        return []  # no histogram data — drop to avoid duplicating estat_* summary rows
 
     result = []
     for pair in ms[1:-1].split("},{"):
