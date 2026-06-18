@@ -50,6 +50,18 @@
   [processors.converter.fields]
     integer = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)"]
 
+# Drop name=total rows from estat_backend-io. total = read + write and can be
+# derived in Grafana, so storing it is redundant. Runs before the clone (order=1)
+# so hist_estat_backend-io also never receives a name=total row.
+[[processors.starlark]]
+  namepass = ["estat_backend-io"]
+  source = '''
+def apply(metric):
+    if metric.tags.get("name") == "total":
+        return []
+    return metric
+'''
+
 # Clone estat_* measurements as hist_estat_* to hold histogram data only.
 # Rows without a microseconds field (e.g. name=total summary rows) have no
 # histogram data; the Starlark processor below drops those clones so they
@@ -93,7 +105,7 @@ def apply(metric):
             m.fields["count"] = int(parts[1])
             result.append(m)
 
-    return result if result else [metric]
+    return result if result else []  # empty microseconds (e.g. "{ }") — drop
 '''
 
 # End of Storage I/O section
