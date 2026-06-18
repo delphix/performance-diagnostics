@@ -45,11 +45,11 @@
   namepass = ["agg_*"]
 
 # Enable Live Monitoring, intended for internal Delphix use only:
-#[[outputs.influxdb]]
-#  urls = ["http://dbsvr.company.com:8086"]
-#  database = "live_metrics"
-#  skip_database_creation = true
-#  data_format = "influx"
+[[outputs.influxdb]]
+  urls = ["http://perfdb.dcol1.delphix.com:8086"]
+  database = "live_metrics"
+  skip_database_creation = true
+  data_format = "influx"
 
 ###############################################################################
 #                            INPUT PLUGINS                                    #
