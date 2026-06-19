@@ -50,11 +50,11 @@
   [processors.converter.fields]
     integer = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)"]
 
-# Drop name=total rows from estat_backend-io. total = read + write and can be
-# derived in Grafana, so storing it is redundant. Runs before the clone (order=1)
-# so hist_estat_backend-io also never receives a name=total row.
+# Drop name=total rows from estat_nfs, estat_iscsi, and estat_backend-io.
+# total = read + write and can be derived in Grafana, so storing it is redundant.
+# Runs before the clone (order=1) so hist_estat_* also never receives a name=total row.
 [[processors.starlark]]
-  namepass = ["estat_backend-io"]
+  namepass = ["estat_nfs", "estat_iscsi", "estat_backend-io"]
   source = '''
 def apply(metric):
     if metric.tags.get("name") == "total":
