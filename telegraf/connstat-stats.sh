@@ -16,7 +16,13 @@
 #   swnd, cwnd, rwnd, rtt                          (averaged across connections)
 #   connections                                    (count of aggregated conns)
 #
-/usr/bin/connstat -PLe -i 10 -T u \
+# mawk (the default awk on Delphix engines) does not flush its stdout buffer
+# when writing to a Telegraf execd pipe, even with explicit fflush() calls.
+# Wrapping connstat in a loop with -c 2 causes awk to exit naturally after
+# each 10-second interval, which triggers the C runtime exit flush (fclose)
+# and reliably delivers data to Telegraf.
+while true; do
+/usr/bin/connstat -PLe -i 10 -c 2 -T u \
     -o laddr,lport,raddr,rport,inbytes,outbytes,retranssegs,suna,unsent,swnd,cwnd,rwnd,rtt \
     | awk -F',' '
 BEGIN {
@@ -66,4 +72,15 @@ NF == 13 {
     sw[key]  += $10; cw[key]   += $11; rw[key]  += $12; rt[key] += $13
     cnt[key]++
 }
+END {
+    for (key in cnt) {
+        n = cnt[key]
+        split(key, k, SUBSEP)
+        print k[1] "," k[2] "," k[3] "," \
+              inb[key] "," outb[key] "," ret[key] "," sun[key] "," uns[key] "," \
+              int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n
+    }
+    fflush()
+}
 '
+done
