@@ -110,6 +110,7 @@
     "arcstats_arc_sys_free", "arcstats_async_upgrade_sync",
     "arcstats_c", "arcstats_data_size",
     "arcstats_demand_data_hits", "arcstats_demand_data_misses",
+    "arcstats_demand_metadata_hits", "arcstats_demand_metadata_misses",
     "arcstats_demand_hit_predictive_prefetch",
     "arcstats_evict_not_enough", "arcstats_evict_skip",
     "arcstats_hits", "arcstats_misses",
