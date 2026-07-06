@@ -1,0 +1,120 @@
+##############################################################################
+# Storage I/O collection: NFS server, iSCSI target, and backend disk I/O.
+# Always included when InfluxDB is enabled, independent of playbook state.
+# NFS/iSCSI/backend-IO are also collected continuously by delphix-stat into
+# analytics_datapoint (the source for Support Grafana), so full histogram
+# capture here mirrors that existing always-on precedent.
+
+# Collect output from "estat nfs -jm 10"
+[[inputs.execd]]
+  command = ["estat", "nfs", "-jm", "10"]
+  name_override = "estat_nfs"
+  signal = "none"
+  restart_delay = "30s"
+  data_format = "json"
+  tag_keys = [
+    "name",
+    "axis"
+  ]
+  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
+
+# Collect output from "estat iscsi -jm 10"
+[[inputs.execd]]
+  command = ["estat", "iscsi", "-jm", "10"]
+  name_override = "estat_iscsi"
+  signal = "none"
+  restart_delay = "30s"
+  data_format = "json"
+  tag_keys = [
+    "name",
+    "axis"
+  ]
+  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
+
+# Collect output from "estat backend-io -jm 10" (stbtrace io equivalent)
+[[inputs.execd]]
+  command = ["estat", "backend-io", "-jm", "10"]
+  name_override = "estat_backend-io"
+  signal = "none"
+  restart_delay = "30s"
+  data_format = "json"
+  tag_keys = [
+    "name",
+    "axis"
+  ]
+  json_string_fields = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)", "microseconds"]
+
+# Convert estat string fields to integers so they are not dropped by Telegraf.
+[[processors.converter]]
+  namepass = ["estat_nfs", "estat_iscsi", "estat_backend-io"]
+  [processors.converter.fields]
+    integer = ["iops(/s)", "avg latency(us)", "stddev(us)", "throughput(k/s)"]
+
+# Drop name=total rows from estat_nfs, estat_iscsi, and estat_backend-io.
+# total = read + write and can be derived in Grafana, so storing it is redundant.
+# Runs before the clone (order=1) so hist_estat_* also never receives a name=total row.
+[[processors.starlark]]
+  namepass = ["estat_nfs", "estat_iscsi", "estat_backend-io"]
+  source = '''
+def apply(metric):
+    if metric.tags.get("name") == "total":
+        return []
+    return metric
+'''
+
+# Clone estat_* measurements as hist_estat_* to hold histogram data only.
+# Rows without a microseconds field (e.g. name=total summary rows) have no
+# histogram data; the Starlark processor below drops those clones so they
+# don't duplicate the summary stats already present in estat_*.
+# The microseconds string is expanded into per-bucket le=/count rows by the
+# order=3 Starlark processor below — hist_estat_* never stores the raw string.
+[[processors.clone]]
+  order = 1
+  name_prefix = "hist_"
+  namepass = ["estat_*"]
+
+# Drop microseconds from all original estat_* measurements after cloning.
+# Covers both storage_io (estat_nfs/iscsi/backend-io) and playbook
+# (estat_zpl/zvol/zio/etc) measurements in one place.
+# Uses starlark (not processors.strings) because fieldexclude in
+# processors.strings only filters which fields string transforms run on —
+# it does not remove fields from the metric.
+[[processors.starlark]]
+  order = 2
+  namepass = ["estat_*"]
+  source = '''
+def apply(metric):
+    metric.fields.pop("microseconds", None)
+    return metric
+'''
+
+# Expand hist_estat_* microseconds histogram strings into per-bucket rows for
+# Grafana heatmap support. Each "{upper_bound_us,count}" pair becomes a
+# separate metric with le=<upper_bound_us> tag and count field, replacing the
+# opaque string. Runs after clone (order=1) and the drop (order=2) so the
+# microseconds field is still present in hist_estat_* at this point.
+[[processors.starlark]]
+  order = 3
+  namepass = ["hist_estat_*"]
+  source = '''
+def apply(metric):
+    ms = metric.fields.get("microseconds")
+    if ms == None:
+        return []  # no histogram data — drop to avoid duplicating estat_* summary rows
+
+    result = []
+    for pair in ms[1:-1].split("},{"):
+        parts = pair.split(",")
+        if len(parts) == 2 and parts[1]:
+            m = deepcopy(metric)
+            m.tags["le"] = parts[0]
+            for k in list(m.fields.keys()):
+                m.fields.pop(k)
+            m.fields["count"] = int(parts[1])
+            result.append(m)
+
+    return result if result else []  # empty microseconds (e.g. "{ }") — drop
+'''
+
+# End of Storage I/O section
+##############################################################################

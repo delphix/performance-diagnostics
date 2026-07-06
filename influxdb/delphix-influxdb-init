@@ -1,0 +1,273 @@
+#!/bin/bash -eu
+#
+# Copyright (c) 2026 by Delphix. All rights reserved.
+#
+# One-time InfluxDB initialization: creates org, bucket, admin token,
+# a read-only token for DCT Smart Proxy, and writes the
+# [[outputs.influxdb_v2]] stanza to /etc/telegraf/telegraf.outputs.influxdb,
+# which is included by delphix-telegraf-service when INFLUXDB_ENABLED flag exists.
+# Skips setup if InfluxDB is already initialized.
+#
+
+INFLUXDB_URL="http://127.0.0.1:8086"
+INFLUXDB_CONFIG_DIR="/etc/influxdb"
+INFLUXDB_META_FILE="$INFLUXDB_CONFIG_DIR/influxdb_meta"
+# State file written immediately after /api/v2/setup so the script can resume
+# if it is interrupted before the metadata file is fully written.
+INFLUXDB_SETUP_STATE_FILE="$INFLUXDB_CONFIG_DIR/influxdb_setup_state"
+INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
+INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
+INFLUXDB_INIT_CONF="$INFLUXDB_CONFIG_DIR/influxdb-init.conf"
+
+# Load tunable configuration (org, bucket, retention, wait parameters).
+# shellcheck source=/etc/influxdb/influxdb-init.conf
+# shellcheck disable=SC1091
+source "$INFLUXDB_INIT_CONF"
+
+INFLUXDB_ADMIN_USER="admin"
+INFLUXDB_ADMIN_PASSWORD=""
+
+#
+# Log a message to stderr with a timestamp.
+#
+log() {
+	echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*" >&2
+}
+
+#
+# Extract a field from a JSON string using python3.
+#
+json_field() {
+	local json="$1"
+	local field="$2"
+	echo "$json" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())$field)" ||
+		{ log "ERROR: Failed to parse field '$field' from JSON response."; return 1; }
+}
+
+#
+# POST to the InfluxDB HTTP API. Exits with an error if the request fails.
+#
+influx_post() {
+	local endpoint="$1"
+	local data="$2"
+	local auth_header="${3:-}"
+
+	local curl_args=(-sf -X POST "$INFLUXDB_URL$endpoint" -H 'Content-Type: application/json' -d "$data")
+	[[ -n "$auth_header" ]] && curl_args+=(-H "Authorization: Token $auth_header")
+
+	local response
+	response=$(curl "${curl_args[@]}") ||
+		{ log "ERROR: HTTP POST to '$endpoint' failed."; return 1; }
+	echo "$response"
+}
+
+mkdir -p "$INFLUXDB_CONFIG_DIR"
+
+# Skip if already fully initialized.
+if [[ -f "$INFLUXDB_META_FILE" ]]; then
+	log "InfluxDB already initialized, skipping."
+	exit 0
+fi
+
+#
+# Wait for InfluxDB to be ready.
+#
+ready=false
+for i in $(seq 1 "$INFLUXDB_WAIT_RETRIES"); do
+	if curl -sf "$INFLUXDB_URL/health" &>/dev/null; then
+		ready=true
+		break
+	fi
+	sleep "$INFLUXDB_WAIT_INTERVAL"
+done
+
+if [[ "$ready" != "true" ]]; then
+	log "ERROR: InfluxDB did not become ready after $((INFLUXDB_WAIT_RETRIES * INFLUXDB_WAIT_INTERVAL))s."
+	exit 1
+fi
+
+#
+# Initial setup — creates org, bucket, and returns admin token + IDs.
+# /api/v2/setup is a one-shot operation; if the script is interrupted after
+# this point and re-run, the state file lets us skip setup and reuse the
+# already-created admin token.
+#
+ADMIN_TOKEN=""
+ORG_ID=""
+BUCKET_ID=""
+SUPPORT_BUCKET_ID=""
+
+if [[ -f "$INFLUXDB_SETUP_STATE_FILE" ]]; then
+	while IFS= read -r line; do
+		key="${line%%=*}"
+		value="${line#*=}"
+		case "$key" in
+			ADMIN_TOKEN)             ADMIN_TOKEN="$value" ;;
+			ORG_ID)                  ORG_ID="$value" ;;
+			BUCKET_ID)               BUCKET_ID="$value" ;;
+			SUPPORT_BUCKET_ID)       SUPPORT_BUCKET_ID="$value" ;;
+			INFLUXDB_ADMIN_PASSWORD) INFLUXDB_ADMIN_PASSWORD="$value" ;;
+			WRITE_TOKEN)             WRITE_TOKEN="$value" ;;
+			READ_TOKEN)              READ_TOKEN="$value" ;;
+			SUPPORT_WRITE_TOKEN)     SUPPORT_WRITE_TOKEN="$value" ;;
+		esac
+	done <"$INFLUXDB_SETUP_STATE_FILE"
+else
+	# Generate password only when actually running setup for the first time.
+	INFLUXDB_ADMIN_PASSWORD="$(openssl rand -hex 16)"
+	SETUP_RESPONSE=$(influx_post "/api/v2/setup" "{
+		\"username\": \"$INFLUXDB_ADMIN_USER\",
+		\"password\": \"$INFLUXDB_ADMIN_PASSWORD\",
+		\"org\": \"$INFLUXDB_ORG\",
+		\"bucket\": \"$INFLUXDB_BUCKET\",
+		\"retentionPeriodSeconds\": $INFLUXDB_RETENTION_SECONDS
+	}") || exit 1
+
+	ADMIN_TOKEN=$(json_field "$SETUP_RESPONSE" "['auth']['token']") || exit 1
+	ORG_ID=$(json_field "$SETUP_RESPONSE" "['org']['id']") || exit 1
+	BUCKET_ID=$(json_field "$SETUP_RESPONSE" "['bucket']['id']") || exit 1
+
+	# Persist admin token + IDs + password immediately so a subsequent re-run
+	# can resume without repeating the one-shot setup call, and so the password
+	# stored in influxdb_meta always matches what InfluxDB was initialised with.
+	old_umask="$(umask)"
+	umask 077
+	tmp_state="$(mktemp "${INFLUXDB_SETUP_STATE_FILE}.XXXXXX")"
+	printf 'ADMIN_TOKEN=%s\nORG_ID=%s\nBUCKET_ID=%s\nINFLUXDB_ADMIN_PASSWORD=%s\n' \
+		"$ADMIN_TOKEN" "$ORG_ID" "$BUCKET_ID" "$INFLUXDB_ADMIN_PASSWORD" >"$tmp_state"
+	chmod 600 "$tmp_state"
+	mv "$tmp_state" "$INFLUXDB_SETUP_STATE_FILE"
+	umask "$old_umask"
+fi
+
+#
+# Create the support_metrics bucket (skipped if already persisted in state).
+#
+if [[ -z "$SUPPORT_BUCKET_ID" ]]; then
+	SUPPORT_BUCKET_RESPONSE=$(influx_post "/api/v2/buckets" "{
+		\"orgID\": \"$ORG_ID\",
+		\"name\": \"$INFLUXDB_SUPPORT_BUCKET\",
+		\"retentionRules\": [{\"type\": \"expire\", \"everySeconds\": $INFLUXDB_SUPPORT_RETENTION_SECONDS}]
+	}" "$ADMIN_TOKEN") || exit 1
+	SUPPORT_BUCKET_ID=$(json_field "$SUPPORT_BUCKET_RESPONSE" "['id']") || exit 1
+	printf 'SUPPORT_BUCKET_ID=%s\n' "$SUPPORT_BUCKET_ID" >>"$INFLUXDB_SETUP_STATE_FILE"
+fi
+
+# Token creation is guarded so that on crash-resume (setup state exists but
+# meta file not yet written), we reuse already-created tokens rather than
+# creating orphaned duplicates in InfluxDB on each retry.
+WRITE_TOKEN="${WRITE_TOKEN:-}"
+READ_TOKEN="${READ_TOKEN:-}"
+SUPPORT_WRITE_TOKEN="${SUPPORT_WRITE_TOKEN:-}"
+
+#
+# Create a write-only token for Telegraf (skipped if already persisted in state).
+#
+if [[ -z "$WRITE_TOKEN" ]]; then
+	WRITE_TOKEN_RESPONSE=$(influx_post "/api/v2/authorizations" "{
+		\"orgID\": \"$ORG_ID\",
+		\"description\": \"telegraf-write-token\",
+		\"permissions\": [
+			{\"action\": \"write\", \"resource\": {\"type\": \"buckets\", \"id\": \"$BUCKET_ID\", \"orgID\": \"$ORG_ID\"}}
+		]
+	}" "$ADMIN_TOKEN") || exit 1
+	WRITE_TOKEN=$(json_field "$WRITE_TOKEN_RESPONSE" "['token']") || exit 1
+	printf 'WRITE_TOKEN=%s\n' "$WRITE_TOKEN" >>"$INFLUXDB_SETUP_STATE_FILE"
+fi
+
+#
+# Create a read-only token for DCT Smart Proxy (skipped if already persisted in state).
+#
+if [[ -z "$READ_TOKEN" ]]; then
+	READ_TOKEN_RESPONSE=$(influx_post "/api/v2/authorizations" "{
+		\"orgID\": \"$ORG_ID\",
+		\"description\": \"dct-read-token\",
+		\"permissions\": [
+			{\"action\": \"read\", \"resource\": {\"type\": \"buckets\", \"id\": \"$BUCKET_ID\", \"orgID\": \"$ORG_ID\"}}
+		]
+	}" "$ADMIN_TOKEN") || exit 1
+	READ_TOKEN=$(json_field "$READ_TOKEN_RESPONSE" "['token']") || exit 1
+	printf 'READ_TOKEN=%s\n' "$READ_TOKEN" >>"$INFLUXDB_SETUP_STATE_FILE"
+fi
+
+#
+# Create a write-only token for the support_metrics bucket (skipped if already persisted).
+#
+if [[ -z "$SUPPORT_WRITE_TOKEN" ]]; then
+	SUPPORT_WRITE_TOKEN_RESPONSE=$(influx_post "/api/v2/authorizations" "{
+		\"orgID\": \"$ORG_ID\",
+		\"description\": \"telegraf-support-write-token\",
+		\"permissions\": [
+			{\"action\": \"write\", \"resource\": {\"type\": \"buckets\", \"id\": \"$SUPPORT_BUCKET_ID\", \"orgID\": \"$ORG_ID\"}}
+		]
+	}" "$ADMIN_TOKEN") || exit 1
+	SUPPORT_WRITE_TOKEN=$(json_field "$SUPPORT_WRITE_TOKEN_RESPONSE" "['token']") || exit 1
+	printf 'SUPPORT_WRITE_TOKEN=%s\n' "$SUPPORT_WRITE_TOKEN" >>"$INFLUXDB_SETUP_STATE_FILE"
+fi
+
+#
+# Write two [[outputs.influxdb_v2]] stanzas to a dedicated telegraf output file:
+#   - default bucket: Grafana-facing measurements currently used in dashboards:
+#     cpu, disk, diskio, net, tcp_stats, zfs,
+#     estat_nfs, estat_iscsi, hist_estat_nfs, hist_estat_iscsi, hist_estat_backend-io
+#   - support_metrics bucket: everything else (not yet in any dashboard panel)
+# The flag is read by delphix-telegraf-service to conditionally include this output.
+#
+cat >"$INFLUXDB_OUTPUT" <<EOF
+[[outputs.influxdb_v2]]
+  urls = ["http://127.0.0.1:8086"]
+  token = "$WRITE_TOKEN"
+  organization = "$INFLUXDB_ORG"
+  bucket = "$INFLUXDB_BUCKET"
+  namepass = ["cpu", "disk", "diskio", "net", "tcp_stats", "zfs",
+    "estat_nfs", "estat_iscsi",
+    "hist_estat_nfs", "hist_estat_iscsi", "hist_estat_backend-io"]
+
+[[outputs.influxdb_v2]]
+  urls = ["http://127.0.0.1:8086"]
+  token = "$SUPPORT_WRITE_TOKEN"
+  organization = "$INFLUXDB_ORG"
+  bucket = "$INFLUXDB_SUPPORT_BUCKET"
+  namedrop = ["cpu", "disk", "diskio", "net", "tcp_stats", "zfs",
+    "estat_nfs", "estat_iscsi",
+    "hist_estat_nfs", "hist_estat_iscsi", "hist_estat_backend-io"]
+EOF
+# Enforce restrictive permissions so the write tokens are not world-readable.
+chmod 640 "$INFLUXDB_OUTPUT"
+touch "$INFLUXDB_FLAG"
+
+#
+# Persist org/bucket/admin credentials/tokens so DE APIs can expose them to DCT
+# and so the admin can access the InfluxDB UI. File is chmod 600 (root-only).
+#
+# Use a restrictive umask and a temp file to avoid a window where tokens are
+# readable by non-root users, then atomically move the file into place.
+old_umask="$(umask)"
+umask 077
+tmp_meta="$(mktemp "${INFLUXDB_META_FILE}.XXXXXX")"
+cat >"$tmp_meta" <<EOF
+INFLUXDB_ORG=$INFLUXDB_ORG
+INFLUXDB_BUCKET=$INFLUXDB_BUCKET
+INFLUXDB_BUCKET_ID=$BUCKET_ID
+INFLUXDB_SUPPORT_BUCKET=$INFLUXDB_SUPPORT_BUCKET
+INFLUXDB_SUPPORT_BUCKET_ID=$SUPPORT_BUCKET_ID
+INFLUXDB_ADMIN_USER=$INFLUXDB_ADMIN_USER
+INFLUXDB_ADMIN_PASSWORD=$INFLUXDB_ADMIN_PASSWORD
+INFLUXDB_WRITE_TOKEN=$WRITE_TOKEN
+INFLUXDB_READ_TOKEN=$READ_TOKEN
+# INFLUXDB_SUPPORT_WRITE_TOKEN is intentionally omitted: it is a
+# Telegraf-internal write token used only by the support_metrics output stanza
+# and is not needed by any external consumer (DCT, DE APIs, admin UI).
+# If telegraf.outputs.influxdb is lost, re-running delphix-influxdb-init
+# will recreate all tokens from scratch.
+EOF
+chmod 600 "$tmp_meta"
+mv "$tmp_meta" "$INFLUXDB_META_FILE"
+umask "$old_umask"
+
+rm -f "$INFLUXDB_SETUP_STATE_FILE"
+log "InfluxDB initialized successfully."
+
+# Restart Telegraf so it picks up the InfluxDB output stanza written above.
+# This is only reached on first boot (subsequent boots exit early at the top).
+systemctl restart delphix-telegraf 2>/dev/null || true

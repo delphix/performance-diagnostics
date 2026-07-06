@@ -1,0 +1,47 @@
+#!/bin/bash
+#
+# Copyright (c) 2026 by Delphix. All rights reserved.
+#
+# Script that enables and disables InfluxDB metric output for Telegraf.
+#
+
+INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
+INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
+
+function die() {
+	echo -e "$(date +%T:%N:%z): $(basename $0): $*" >&2
+	exit 1
+}
+
+[[ $EUID -ne 0 ]] && die "must be run as root"
+
+function usage() {
+	echo "$(basename $0): $*" >&2
+	echo "Usage: $(basename $0) [enable|disable]"
+	exit 2
+}
+
+function enable_influxdb() {
+	date
+	[[ ! -f $INFLUXDB_OUTPUT ]] && die "$INFLUXDB_OUTPUT not found. Run delphix-influxdb-init first."
+	echo "Enabling InfluxDB Metric Output"
+	touch $INFLUXDB_FLAG
+	systemctl restart delphix-telegraf || die "Failed to restart delphix-telegraf"
+}
+
+function disable_influxdb() {
+	date
+	echo "Disabling InfluxDB Metric Output"
+	rm -f $INFLUXDB_FLAG
+	systemctl restart delphix-telegraf || die "Failed to restart delphix-telegraf"
+}
+
+if [[ $# -ne 1 ]]; then
+	usage
+fi
+
+case "$1" in
+enable) enable_influxdb ;;
+disable) disable_influxdb ;;
+*) usage ;;
+esac

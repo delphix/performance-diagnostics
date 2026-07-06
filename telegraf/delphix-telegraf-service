@@ -3,7 +3,10 @@ BASE_CONFIG=/etc/telegraf/telegraf.base
 DOSE_INPUTS=/etc/telegraf/telegraf.inputs.dose
 DCT_INPUTS=/etc/telegraf/telegraf.inputs.dct
 PLAYBOOK_INPUTS=/etc/telegraf/telegraf.inputs.playbook
+STORAGE_IO_INPUTS=/etc/telegraf/telegraf.inputs.storage_io
+INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
 PLAYBOOK_FLAG=/etc/telegraf/PLAYBOOK_ENABLED
+INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
 TELEGRAF_CONFIG=/etc/telegraf/telegraf.conf
 
 
@@ -19,6 +22,10 @@ function engine_is_object_based() {
 
 function playbook_is_enabled() {
 	[[ -f $PLAYBOOK_FLAG ]]
+}
+
+function influxdb_is_enabled() {
+	[[ -f $INFLUXDB_FLAG ]]
 }
 
 rm -f $TELEGRAF_CONFIG
@@ -42,5 +49,23 @@ else
 		cat $BASE_CONFIG > $TELEGRAF_CONFIG
 	fi
 fi
+
+if influxdb_is_enabled && [[ -f $INFLUXDB_OUTPUT ]]; then
+	if [[ -f $STORAGE_IO_INPUTS ]]; then
+		cat $STORAGE_IO_INPUTS >> $TELEGRAF_CONFIG
+	fi
+	cat $INFLUXDB_OUTPUT >> $TELEGRAF_CONFIG
+else
+	if influxdb_is_enabled; then
+		logger -t delphix-telegraf "WARNING: INFLUXDB_ENABLED is set but $INFLUXDB_OUTPUT is missing — metrics will be discarded. Run delphix-influxdb-init to restore InfluxDB output."
+	fi
+	# No InfluxDB output configured. Add discard so Telegraf can start —
+	# it requires at least one output plugin.
+	echo "[[outputs.discard]]" >> $TELEGRAF_CONFIG
+fi
+
+# Restrict permissions unconditionally as a hardening measure; also ensures
+# the InfluxDB write token is not world-readable when InfluxDB is enabled.
+chmod 640 $TELEGRAF_CONFIG
 
 /usr/bin/telegraf -config $TELEGRAF_CONFIG
