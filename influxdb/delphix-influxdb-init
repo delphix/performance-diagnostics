@@ -8,6 +8,10 @@
 # which is included by delphix-telegraf-service when INFLUXDB_ENABLED flag exists.
 # Skips setup if InfluxDB is already initialized.
 #
+# Recovery: if telegraf.outputs.influxdb is deleted while influxdb_meta still
+# exists, re-running this script reads stored tokens from influxdb_meta and
+# regenerates the output file without repeating any InfluxDB API calls.
+#
 
 INFLUXDB_URL="http://127.0.0.1:8086"
 INFLUXDB_CONFIG_DIR="/etc/influxdb"
@@ -23,6 +27,17 @@ INFLUXDB_INIT_CONF="$INFLUXDB_CONFIG_DIR/influxdb-init.conf"
 # shellcheck source=/etc/influxdb/influxdb-init.conf
 # shellcheck disable=SC1091
 source "$INFLUXDB_INIT_CONF"
+
+# Validate required keys from the conf file — a missing key under bash -eu would
+# abort with a cryptic "unbound variable" and leave InfluxDB output unconfigured.
+for _key in INFLUXDB_ORG INFLUXDB_BUCKET INFLUXDB_RETENTION_SECONDS \
+            INFLUXDB_SUPPORT_BUCKET INFLUXDB_SUPPORT_RETENTION_SECONDS \
+            INFLUXDB_WAIT_RETRIES INFLUXDB_WAIT_INTERVAL; do
+	if [[ -z "${!_key:-}" ]]; then
+		echo "ERROR: Required key '$_key' is missing or empty in $INFLUXDB_INIT_CONF" >&2
+		exit 1
+	fi
+done
 
 INFLUXDB_ADMIN_USER="admin"
 INFLUXDB_ADMIN_PASSWORD=""
@@ -61,10 +76,32 @@ influx_post() {
 	echo "$response"
 }
 
+#
+# Atomically rewrite the full state file from current in-memory variables.
+# Called after each new value is obtained so the on-disk file is always
+# internally consistent — eliminates torn lines from incremental >> appends.
+#
+write_state_file() {
+	local tmp old_umask
+	old_umask="$(umask)"
+	umask 077
+	tmp="$(mktemp "${INFLUXDB_SETUP_STATE_FILE}.XXXXXX")"
+	chmod 600 "$tmp"
+	printf 'ADMIN_TOKEN=%s\nORG_ID=%s\nBUCKET_ID=%s\nINFLUXDB_ADMIN_PASSWORD=%s\n' \
+		"$ADMIN_TOKEN" "$ORG_ID" "$BUCKET_ID" "$INFLUXDB_ADMIN_PASSWORD" >"$tmp"
+	[[ -n "${SUPPORT_BUCKET_ID:-}" ]]   && printf 'SUPPORT_BUCKET_ID=%s\n'   "$SUPPORT_BUCKET_ID"   >>"$tmp"
+	[[ -n "${WRITE_TOKEN:-}" ]]         && printf 'WRITE_TOKEN=%s\n'         "$WRITE_TOKEN"         >>"$tmp"
+	[[ -n "${READ_TOKEN:-}" ]]          && printf 'READ_TOKEN=%s\n'          "$READ_TOKEN"          >>"$tmp"
+	[[ -n "${SUPPORT_WRITE_TOKEN:-}" ]] && printf 'SUPPORT_WRITE_TOKEN=%s\n' "$SUPPORT_WRITE_TOKEN" >>"$tmp"
+	mv "$tmp" "$INFLUXDB_SETUP_STATE_FILE"
+	umask "$old_umask"
+}
+
 mkdir -p "$INFLUXDB_CONFIG_DIR"
 
-# Skip if already fully initialized.
-if [[ -f "$INFLUXDB_META_FILE" ]]; then
+# Skip only when fully initialized AND the Telegraf output file is present.
+# If meta exists but output is missing (e.g. deleted), fall through to regenerate.
+if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
 	log "InfluxDB already initialized, skipping."
 	exit 0
 fi
@@ -96,8 +133,56 @@ ADMIN_TOKEN=""
 ORG_ID=""
 BUCKET_ID=""
 SUPPORT_BUCKET_ID=""
+WRITE_TOKEN=""
+READ_TOKEN=""
+SUPPORT_WRITE_TOKEN=""
 
-if [[ -f "$INFLUXDB_SETUP_STATE_FILE" ]]; then
+if [[ -f "$INFLUXDB_META_FILE" ]]; then
+	# Meta file exists but output file is missing — read stored tokens and
+	# regenerate the output file without repeating any InfluxDB API calls.
+	while IFS= read -r line; do
+		[[ "$line" =~ ^[[:space:]]*# ]] && continue
+		key="${line%%=*}"
+		value="${line#*=}"
+		case "$key" in
+			INFLUXDB_ORG)                INFLUXDB_ORG="$value" ;;
+			INFLUXDB_BUCKET)             INFLUXDB_BUCKET="$value" ;;
+			INFLUXDB_SUPPORT_BUCKET)     INFLUXDB_SUPPORT_BUCKET="$value" ;;
+			INFLUXDB_WRITE_TOKEN)        WRITE_TOKEN="$value" ;;
+			INFLUXDB_SUPPORT_WRITE_TOKEN) SUPPORT_WRITE_TOKEN="$value" ;;
+		esac
+	done <"$INFLUXDB_META_FILE"
+	if [[ -z "$WRITE_TOKEN" || -z "$SUPPORT_WRITE_TOKEN" ]]; then
+		log "ERROR: Could not read required tokens from $INFLUXDB_META_FILE."
+		exit 1
+	fi
+	# Jump to writing the output file — skip all token creation steps.
+	cat >"$INFLUXDB_OUTPUT" <<EOF
+[[outputs.influxdb_v2]]
+  urls = ["http://127.0.0.1:8086"]
+  token = "$WRITE_TOKEN"
+  organization = "$INFLUXDB_ORG"
+  bucket = "$INFLUXDB_BUCKET"
+  namepass = ["cpu", "disk", "diskio", "net", "tcp_stats", "zfs",
+    "estat_nfs", "estat_iscsi",
+    "hist_estat_nfs", "hist_estat_iscsi", "hist_estat_backend-io"]
+
+[[outputs.influxdb_v2]]
+  urls = ["http://127.0.0.1:8086"]
+  token = "$SUPPORT_WRITE_TOKEN"
+  organization = "$INFLUXDB_ORG"
+  bucket = "$INFLUXDB_SUPPORT_BUCKET"
+  namedrop = ["cpu", "disk", "diskio", "net", "tcp_stats", "zfs",
+    "estat_nfs", "estat_iscsi",
+    "hist_estat_nfs", "hist_estat_iscsi", "hist_estat_backend-io"]
+EOF
+	chmod 640 "$INFLUXDB_OUTPUT"
+	touch "$INFLUXDB_FLAG"
+	log "InfluxDB output file regenerated from stored credentials."
+	systemctl restart delphix-telegraf 2>/dev/null || true
+	exit 0
+
+elif [[ -f "$INFLUXDB_SETUP_STATE_FILE" ]]; then
 	while IFS= read -r line; do
 		key="${line%%=*}"
 		value="${line#*=}"
@@ -113,6 +198,21 @@ if [[ -f "$INFLUXDB_SETUP_STATE_FILE" ]]; then
 		esac
 	done <"$INFLUXDB_SETUP_STATE_FILE"
 else
+	# No local state — probe whether InfluxDB is already onboarded.
+	# This handles the narrow crash window between POST /api/v2/setup returning
+	# and the state file being written, and the config-volume-reset scenario.
+	SETUP_CHECK=$(curl -sf "$INFLUXDB_URL/api/v2/setup") || {
+		log "ERROR: Failed to probe InfluxDB setup state."
+		exit 1
+	}
+	SETUP_ALLOWED=$(json_field "$SETUP_CHECK" "['allowed']") || exit 1
+	if [[ "$SETUP_ALLOWED" == "False" ]]; then
+		log "ERROR: InfluxDB is already onboarded but no local state file was found."
+		log "ERROR: This indicates a crash during initial setup or a config-volume reset."
+		log "ERROR: Manual recovery: retrieve admin credentials from the InfluxDB data volume."
+		exit 1
+	fi
+
 	# Generate password only when actually running setup for the first time.
 	INFLUXDB_ADMIN_PASSWORD="$(openssl rand -hex 16)"
 	SETUP_RESPONSE=$(influx_post "/api/v2/setup" "{
@@ -127,17 +227,9 @@ else
 	ORG_ID=$(json_field "$SETUP_RESPONSE" "['org']['id']") || exit 1
 	BUCKET_ID=$(json_field "$SETUP_RESPONSE" "['bucket']['id']") || exit 1
 
-	# Persist admin token + IDs + password immediately so a subsequent re-run
-	# can resume without repeating the one-shot setup call, and so the password
-	# stored in influxdb_meta always matches what InfluxDB was initialised with.
-	old_umask="$(umask)"
-	umask 077
-	tmp_state="$(mktemp "${INFLUXDB_SETUP_STATE_FILE}.XXXXXX")"
-	printf 'ADMIN_TOKEN=%s\nORG_ID=%s\nBUCKET_ID=%s\nINFLUXDB_ADMIN_PASSWORD=%s\n' \
-		"$ADMIN_TOKEN" "$ORG_ID" "$BUCKET_ID" "$INFLUXDB_ADMIN_PASSWORD" >"$tmp_state"
-	chmod 600 "$tmp_state"
-	mv "$tmp_state" "$INFLUXDB_SETUP_STATE_FILE"
-	umask "$old_umask"
+	# Persist immediately so a subsequent re-run can resume without repeating
+	# the one-shot setup call.
+	write_state_file
 fi
 
 #
@@ -150,15 +242,8 @@ if [[ -z "$SUPPORT_BUCKET_ID" ]]; then
 		\"retentionRules\": [{\"type\": \"expire\", \"everySeconds\": $INFLUXDB_SUPPORT_RETENTION_SECONDS}]
 	}" "$ADMIN_TOKEN") || exit 1
 	SUPPORT_BUCKET_ID=$(json_field "$SUPPORT_BUCKET_RESPONSE" "['id']") || exit 1
-	printf 'SUPPORT_BUCKET_ID=%s\n' "$SUPPORT_BUCKET_ID" >>"$INFLUXDB_SETUP_STATE_FILE"
+	write_state_file
 fi
-
-# Token creation is guarded so that on crash-resume (setup state exists but
-# meta file not yet written), we reuse already-created tokens rather than
-# creating orphaned duplicates in InfluxDB on each retry.
-WRITE_TOKEN="${WRITE_TOKEN:-}"
-READ_TOKEN="${READ_TOKEN:-}"
-SUPPORT_WRITE_TOKEN="${SUPPORT_WRITE_TOKEN:-}"
 
 #
 # Create a write-only token for Telegraf (skipped if already persisted in state).
@@ -172,7 +257,7 @@ if [[ -z "$WRITE_TOKEN" ]]; then
 		]
 	}" "$ADMIN_TOKEN") || exit 1
 	WRITE_TOKEN=$(json_field "$WRITE_TOKEN_RESPONSE" "['token']") || exit 1
-	printf 'WRITE_TOKEN=%s\n' "$WRITE_TOKEN" >>"$INFLUXDB_SETUP_STATE_FILE"
+	write_state_file
 fi
 
 #
@@ -187,7 +272,7 @@ if [[ -z "$READ_TOKEN" ]]; then
 		]
 	}" "$ADMIN_TOKEN") || exit 1
 	READ_TOKEN=$(json_field "$READ_TOKEN_RESPONSE" "['token']") || exit 1
-	printf 'READ_TOKEN=%s\n' "$READ_TOKEN" >>"$INFLUXDB_SETUP_STATE_FILE"
+	write_state_file
 fi
 
 #
@@ -202,7 +287,7 @@ if [[ -z "$SUPPORT_WRITE_TOKEN" ]]; then
 		]
 	}" "$ADMIN_TOKEN") || exit 1
 	SUPPORT_WRITE_TOKEN=$(json_field "$SUPPORT_WRITE_TOKEN_RESPONSE" "['token']") || exit 1
-	printf 'SUPPORT_WRITE_TOKEN=%s\n' "$SUPPORT_WRITE_TOKEN" >>"$INFLUXDB_SETUP_STATE_FILE"
+	write_state_file
 fi
 
 #
@@ -239,6 +324,8 @@ touch "$INFLUXDB_FLAG"
 #
 # Persist org/bucket/admin credentials/tokens so DE APIs can expose them to DCT
 # and so the admin can access the InfluxDB UI. File is chmod 600 (root-only).
+# INFLUXDB_SUPPORT_WRITE_TOKEN is included so re-running init can regenerate
+# telegraf.outputs.influxdb if it is ever deleted.
 #
 # Use a restrictive umask and a temp file to avoid a window where tokens are
 # readable by non-root users, then atomically move the file into place.
@@ -255,11 +342,7 @@ INFLUXDB_ADMIN_USER=$INFLUXDB_ADMIN_USER
 INFLUXDB_ADMIN_PASSWORD=$INFLUXDB_ADMIN_PASSWORD
 INFLUXDB_WRITE_TOKEN=$WRITE_TOKEN
 INFLUXDB_READ_TOKEN=$READ_TOKEN
-# INFLUXDB_SUPPORT_WRITE_TOKEN is intentionally omitted: it is a
-# Telegraf-internal write token used only by the support_metrics output stanza
-# and is not needed by any external consumer (DCT, DE APIs, admin UI).
-# If telegraf.outputs.influxdb is lost, re-running delphix-influxdb-init
-# will recreate all tokens from scratch.
+INFLUXDB_SUPPORT_WRITE_TOKEN=$SUPPORT_WRITE_TOKEN
 EOF
 chmod 600 "$tmp_meta"
 mv "$tmp_meta" "$INFLUXDB_META_FILE"

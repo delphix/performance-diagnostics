@@ -106,8 +106,11 @@ def apply(metric):
     for pair in ms[1:-1].split("},{"):
         parts = pair.split(",")
         if len(parts) == 2 and parts[1]:
+            # Skip malformed pairs where either field is non-numeric.
+            if not parts[0].isdigit() or not parts[1].isdigit():
+                continue
             m = deepcopy(metric)
-            m.tags["le"] = parts[0]
+            m.tags["le"] = int(parts[0])
             for k in list(m.fields.keys()):
                 m.fields.pop(k)
             m.fields["count"] = int(parts[1])
