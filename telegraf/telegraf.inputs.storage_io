@@ -110,7 +110,7 @@ def apply(metric):
             if not parts[0].isdigit() or not parts[1].isdigit():
                 continue
             m = deepcopy(metric)
-            m.tags["le"] = int(parts[0])
+            m.tags["le"] = parts[0]
             for k in list(m.fields.keys()):
                 m.fields.pop(k)
             m.fields["count"] = int(parts[1])
