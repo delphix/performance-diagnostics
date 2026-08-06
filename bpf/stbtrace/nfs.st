@@ -122,8 +122,8 @@ BPF_HASH($hist.name$, nfs_hist_key_t, u64);
 }$
 
 // Probe functions to initialize thread local data
-// Kernel signature: __be32 nfsd_read(struct svc_rqst *rqstp, struct svc_fh *fhp,
-//     loff_t offset, unsigned long *count, u32 *eof)
+// Kernel signature: __be32 nfsd_read(struct svc_rqst *rqstp,
+//     struct svc_fh *fhp, off_t offset, unsigned long *count, u32 *eof)
 int nfsd3_read_start(struct pt_regs *ctx, struct svc_rqst *rqstp, void *fhp,
     loff_t offset, unsigned long *count, u32 *eof)
 {
@@ -138,9 +138,10 @@ int nfsd3_read_start(struct pt_regs *ctx, struct svc_rqst *rqstp, void *fhp,
     return 0;
 }
 
-// Kernel signature: __be32 nfsd_write(struct svc_rqst *rqstp, struct svc_fh *fhp,
-//     loff_t offset, struct kvec *vec, int vlen, unsigned long *cnt, int stable,
-//     __be32 *verf)
+// Kernel signature: __be32 nfsd_write(
+//     struct svc_rqst *rqstp, struct svc_fh *fhp,
+//     loff_t offset, struct kvec *vec, int vlen, unsigned long *cnt,
+//     int stable, __be32 *verf)
 int nfsd3_write_start(struct pt_regs *ctx, struct svc_rqst *rqstp, void *fhp,
     loff_t offset, void *vec, int vlen, unsigned long *count)
 {
