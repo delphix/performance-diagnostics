@@ -15,10 +15,14 @@
 
 INFLUXDB_URL="http://127.0.0.1:8086"
 INFLUXDB_CONFIG_DIR="/etc/influxdb"
-INFLUXDB_META_FILE="$INFLUXDB_CONFIG_DIR/influxdb_meta"
+# Runtime state (tokens, IDs, setup progress) lives under the InfluxDB data
+# directory per FHS — /etc is for static configuration only.
+INFLUXDB_STATE_DIR="/var/lib/influxdb"
+INFLUXDB_META_FILE="$INFLUXDB_STATE_DIR/influxdb_meta"
 # State file written immediately after /api/v2/setup so the script can resume
 # if it is interrupted before the metadata file is fully written.
-INFLUXDB_SETUP_STATE_FILE="$INFLUXDB_CONFIG_DIR/influxdb_setup_state"
+INFLUXDB_SETUP_STATE_FILE="$INFLUXDB_STATE_DIR/influxdb_setup_state"
+# Telegraf flag and output live in /etc/telegraf alongside all other Telegraf config.
 INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
 INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
 INFLUXDB_INIT_CONF="$INFLUXDB_CONFIG_DIR/influxdb-init.conf"
@@ -42,6 +46,16 @@ done
 INFLUXDB_ADMIN_USER="admin"
 INFLUXDB_ADMIN_PASSWORD=""
 
+# Canonical list of measurements routed to the Grafana-facing default bucket.
+# All other measurements go to support_metrics. Change here only when adding
+# or removing measurements from the dashboard bucket.
+# TODO: make product-conditional — nfs/iscsi stats only for Continuous Data engines.
+GRAFANA_MEASUREMENTS=(
+	"cpu" "disk" "diskio" "net" "tcp_stats" "zfs"
+	"estat_nfs" "estat_iscsi"
+	"hist_estat_nfs" "hist_estat_iscsi" "hist_estat_backend-io"
+)
+
 #
 # Log a message to stderr with a timestamp.
 #
@@ -50,30 +64,39 @@ log() {
 }
 
 #
-# Extract a field from a JSON string using python3.
+# Extract a field from a JSON string using jq.
 #
 json_field() {
 	local json="$1"
 	local field="$2"
-	echo "$json" | python3 -c "import json,sys; print(json.loads(sys.stdin.read())$field)" ||
+	jq -r "$field" <<< "$json" ||
 		{ log "ERROR: Failed to parse field '$field' from JSON response."; return 1; }
 }
 
 #
-# POST to the InfluxDB HTTP API. Exits with an error if the request fails.
+# Make an HTTP request to the InfluxDB API. Logs the HTTP status and full error
+# body on failure so the caller can diagnose the problem without guessing.
 #
-influx_post() {
-	local endpoint="$1"
-	local data="$2"
-	local auth_header="${3:-}"
+influx_api() {
+	local method="$1"
+	local endpoint="$2"
+	local data="${3:-}"
+	local auth_header="${4:-}"
 
-	local curl_args=(-sf -X POST "$INFLUXDB_URL$endpoint" -H 'Content-Type: application/json' -d "$data")
+	local curl_args=(-s -X "$method" "$INFLUXDB_URL$endpoint" -w '\n%{http_code}')
+	[[ -n "$data" ]] && curl_args+=(-H 'Content-Type: application/json' -d "$data")
 	[[ -n "$auth_header" ]] && curl_args+=(-H "Authorization: Token $auth_header")
 
-	local response
-	response=$(curl "${curl_args[@]}") ||
-		{ log "ERROR: HTTP POST to '$endpoint' failed."; return 1; }
-	echo "$response"
+	local raw http_code body
+	raw=$(curl "${curl_args[@]}")
+	http_code=$(tail -1 <<< "$raw")
+	body=$(head -n -1 <<< "$raw")
+
+	if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+		log "ERROR: HTTP $method to '$endpoint' failed (HTTP $http_code): $body"
+		return 1
+	fi
+	echo "$body"
 }
 
 #
@@ -97,17 +120,54 @@ write_state_file() {
 	umask "$old_umask"
 }
 
-mkdir -p "$INFLUXDB_CONFIG_DIR"
+#
+# Write the two [[outputs.influxdb_v2]] stanzas to the Telegraf output file,
+# derived from the single canonical GRAFANA_MEASUREMENTS list so there is
+# one authoritative source for adding or removing measurements in future.
+# Both the initial-setup path and the recovery path call this function.
+#
+write_telegraf_output() {
+	local write_token="$1"
+	local support_write_token="$2"
 
-# Skip only when fully initialized AND the Telegraf output file is present.
-# If meta exists but output is missing (e.g. deleted), fall through to regenerate.
-if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
-	log "InfluxDB already initialized, skipping."
-	exit 0
+	local sep="" namepass_list="["
+	for m in "${GRAFANA_MEASUREMENTS[@]}"; do
+		namepass_list+="${sep}\"$m\""
+		sep=", "
+	done
+	namepass_list+="]"
+
+	cat >"$INFLUXDB_OUTPUT" <<EOF
+[[outputs.influxdb_v2]]
+  urls = ["http://127.0.0.1:8086"]
+  token = "$write_token"
+  organization = "$INFLUXDB_ORG"
+  bucket = "$INFLUXDB_BUCKET"
+  namepass = $namepass_list
+
+[[outputs.influxdb_v2]]
+  urls = ["http://127.0.0.1:8086"]
+  token = "$support_write_token"
+  organization = "$INFLUXDB_ORG"
+  bucket = "$INFLUXDB_SUPPORT_BUCKET"
+  namedrop = $namepass_list
+EOF
+	chmod 640 "$INFLUXDB_OUTPUT"
+}
+
+mkdir -p "$INFLUXDB_STATE_DIR"
+
+# One-time migration: move state files from old /etc/influxdb location to the
+# canonical /var/lib/influxdb location introduced in this version of the package.
+if [[ -f "/etc/influxdb/influxdb_meta" ]] && [[ ! -f "$INFLUXDB_META_FILE" ]]; then
+	log "Migrating state files from /etc/influxdb to $INFLUXDB_STATE_DIR"
+	mv "/etc/influxdb/influxdb_meta" "$INFLUXDB_META_FILE"
+	[[ -f "/etc/influxdb/influxdb_setup_state" ]] && \
+		mv "/etc/influxdb/influxdb_setup_state" "$INFLUXDB_SETUP_STATE_FILE" || true
 fi
 
 #
-# Wait for InfluxDB to be ready.
+# Wait for InfluxDB to be ready before any API calls.
 #
 ready=false
 for i in $(seq 1 "$INFLUXDB_WAIT_RETRIES"); do
@@ -121,6 +181,42 @@ done
 if [[ "$ready" != "true" ]]; then
 	log "ERROR: InfluxDB did not become ready after $((INFLUXDB_WAIT_RETRIES * INFLUXDB_WAIT_INTERVAL))s."
 	exit 1
+fi
+
+# When fully initialized, reconcile bucket retention against current conf and exit.
+# This ensures retention changes in influxdb-init.conf take effect on the next run
+# rather than being silently ignored after initial setup.
+if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
+	log "InfluxDB already initialized, checking for configuration drift."
+	ADMIN_TOKEN=""; BUCKET_ID=""; SUPPORT_BUCKET_ID=""
+	while IFS= read -r _line; do
+		[[ "$_line" =~ ^[[:space:]]*# ]] && continue
+		_key="${_line%%=*}"; _val="${_line#*=}"
+		case "$_key" in
+			INFLUXDB_ADMIN_TOKEN)       ADMIN_TOKEN="$_val" ;;
+			INFLUXDB_BUCKET_ID)         BUCKET_ID="$_val" ;;
+			INFLUXDB_SUPPORT_BUCKET_ID) SUPPORT_BUCKET_ID="$_val" ;;
+		esac
+	done <"$INFLUXDB_META_FILE"
+
+	if [[ -n "$ADMIN_TOKEN" && -n "$BUCKET_ID" && -n "$SUPPORT_BUCKET_ID" ]]; then
+		for _pair in \
+			"$BUCKET_ID:$INFLUXDB_RETENTION_SECONDS" \
+			"$SUPPORT_BUCKET_ID:$INFLUXDB_SUPPORT_RETENTION_SECONDS"; do
+			_bid="${_pair%%:*}"
+			_desired="${_pair##*:}"
+			_bucket_json=$(influx_api GET "/api/v2/buckets/$_bid" "" "$ADMIN_TOKEN") || continue
+			_current=$(jq -r '.retentionRules[0].everySeconds // "0"' <<< "$_bucket_json")
+			if [[ "$_current" != "$_desired" ]]; then
+				log "Updating bucket $_bid retention: ${_current}s → ${_desired}s"
+				influx_api PATCH "/api/v2/buckets/$_bid" \
+					"{\"retentionRules\":[{\"type\":\"expire\",\"everySeconds\":$_desired}]}" \
+					"$ADMIN_TOKEN" >/dev/null || \
+					log "WARNING: Failed to update retention for bucket $_bid — will retry on next run."
+			fi
+		done
+	fi
+	exit 0
 fi
 
 #
@@ -156,27 +252,7 @@ if [[ -f "$INFLUXDB_META_FILE" ]]; then
 		log "ERROR: Could not read required tokens from $INFLUXDB_META_FILE."
 		exit 1
 	fi
-	# Jump to writing the output file — skip all token creation steps.
-	cat >"$INFLUXDB_OUTPUT" <<EOF
-[[outputs.influxdb_v2]]
-  urls = ["http://127.0.0.1:8086"]
-  token = "$WRITE_TOKEN"
-  organization = "$INFLUXDB_ORG"
-  bucket = "$INFLUXDB_BUCKET"
-  namepass = ["cpu", "disk", "diskio", "net", "tcp_stats", "zfs",
-    "estat_nfs", "estat_iscsi",
-    "hist_estat_nfs", "hist_estat_iscsi", "hist_estat_backend-io"]
-
-[[outputs.influxdb_v2]]
-  urls = ["http://127.0.0.1:8086"]
-  token = "$SUPPORT_WRITE_TOKEN"
-  organization = "$INFLUXDB_ORG"
-  bucket = "$INFLUXDB_SUPPORT_BUCKET"
-  namedrop = ["cpu", "disk", "diskio", "net", "tcp_stats", "zfs",
-    "estat_nfs", "estat_iscsi",
-    "hist_estat_nfs", "hist_estat_iscsi", "hist_estat_backend-io"]
-EOF
-	chmod 640 "$INFLUXDB_OUTPUT"
+	write_telegraf_output "$WRITE_TOKEN" "$SUPPORT_WRITE_TOKEN"
 	touch "$INFLUXDB_FLAG"
 	log "InfluxDB output file regenerated from stored credentials."
 	systemctl restart delphix-telegraf 2>/dev/null || true
@@ -201,12 +277,9 @@ else
 	# No local state — probe whether InfluxDB is already onboarded.
 	# This handles the narrow crash window between POST /api/v2/setup returning
 	# and the state file being written, and the config-volume-reset scenario.
-	SETUP_CHECK=$(curl -sf "$INFLUXDB_URL/api/v2/setup") || {
-		log "ERROR: Failed to probe InfluxDB setup state."
-		exit 1
-	}
-	SETUP_ALLOWED=$(json_field "$SETUP_CHECK" "['allowed']") || exit 1
-	if [[ "$SETUP_ALLOWED" == "False" ]]; then
+	SETUP_CHECK=$(influx_api GET "/api/v2/setup") || exit 1
+	SETUP_ALLOWED=$(json_field "$SETUP_CHECK" ".allowed") || exit 1
+	if [[ "$SETUP_ALLOWED" == "false" ]]; then
 		log "ERROR: InfluxDB is already onboarded but no local state file was found."
 		log "ERROR: This indicates a crash during initial setup or a config-volume reset."
 		log "ERROR: Manual recovery: retrieve admin credentials from the InfluxDB data volume."
@@ -215,7 +288,7 @@ else
 
 	# Generate password only when actually running setup for the first time.
 	INFLUXDB_ADMIN_PASSWORD="$(openssl rand -hex 16)"
-	SETUP_RESPONSE=$(influx_post "/api/v2/setup" "{
+	SETUP_RESPONSE=$(influx_api POST "/api/v2/setup" "{
 		\"username\": \"$INFLUXDB_ADMIN_USER\",
 		\"password\": \"$INFLUXDB_ADMIN_PASSWORD\",
 		\"org\": \"$INFLUXDB_ORG\",
@@ -223,9 +296,9 @@ else
 		\"retentionPeriodSeconds\": $INFLUXDB_RETENTION_SECONDS
 	}") || exit 1
 
-	ADMIN_TOKEN=$(json_field "$SETUP_RESPONSE" "['auth']['token']") || exit 1
-	ORG_ID=$(json_field "$SETUP_RESPONSE" "['org']['id']") || exit 1
-	BUCKET_ID=$(json_field "$SETUP_RESPONSE" "['bucket']['id']") || exit 1
+	ADMIN_TOKEN=$(json_field "$SETUP_RESPONSE" ".auth.token") || exit 1
+	ORG_ID=$(json_field "$SETUP_RESPONSE" ".org.id") || exit 1
+	BUCKET_ID=$(json_field "$SETUP_RESPONSE" ".bucket.id") || exit 1
 
 	# Persist immediately so a subsequent re-run can resume without repeating
 	# the one-shot setup call.
@@ -236,12 +309,12 @@ fi
 # Create the support_metrics bucket (skipped if already persisted in state).
 #
 if [[ -z "$SUPPORT_BUCKET_ID" ]]; then
-	SUPPORT_BUCKET_RESPONSE=$(influx_post "/api/v2/buckets" "{
+	SUPPORT_BUCKET_RESPONSE=$(influx_api POST "/api/v2/buckets" "{
 		\"orgID\": \"$ORG_ID\",
 		\"name\": \"$INFLUXDB_SUPPORT_BUCKET\",
 		\"retentionRules\": [{\"type\": \"expire\", \"everySeconds\": $INFLUXDB_SUPPORT_RETENTION_SECONDS}]
 	}" "$ADMIN_TOKEN") || exit 1
-	SUPPORT_BUCKET_ID=$(json_field "$SUPPORT_BUCKET_RESPONSE" "['id']") || exit 1
+	SUPPORT_BUCKET_ID=$(json_field "$SUPPORT_BUCKET_RESPONSE" ".id") || exit 1
 	write_state_file
 fi
 
@@ -249,14 +322,14 @@ fi
 # Create a write-only token for Telegraf (skipped if already persisted in state).
 #
 if [[ -z "$WRITE_TOKEN" ]]; then
-	WRITE_TOKEN_RESPONSE=$(influx_post "/api/v2/authorizations" "{
+	WRITE_TOKEN_RESPONSE=$(influx_api POST "/api/v2/authorizations" "{
 		\"orgID\": \"$ORG_ID\",
 		\"description\": \"telegraf-write-token\",
 		\"permissions\": [
 			{\"action\": \"write\", \"resource\": {\"type\": \"buckets\", \"id\": \"$BUCKET_ID\", \"orgID\": \"$ORG_ID\"}}
 		]
 	}" "$ADMIN_TOKEN") || exit 1
-	WRITE_TOKEN=$(json_field "$WRITE_TOKEN_RESPONSE" "['token']") || exit 1
+	WRITE_TOKEN=$(json_field "$WRITE_TOKEN_RESPONSE" ".token") || exit 1
 	write_state_file
 fi
 
@@ -264,14 +337,14 @@ fi
 # Create a read-only token for DCT Smart Proxy (skipped if already persisted in state).
 #
 if [[ -z "$READ_TOKEN" ]]; then
-	READ_TOKEN_RESPONSE=$(influx_post "/api/v2/authorizations" "{
+	READ_TOKEN_RESPONSE=$(influx_api POST "/api/v2/authorizations" "{
 		\"orgID\": \"$ORG_ID\",
 		\"description\": \"dct-read-token\",
 		\"permissions\": [
 			{\"action\": \"read\", \"resource\": {\"type\": \"buckets\", \"id\": \"$BUCKET_ID\", \"orgID\": \"$ORG_ID\"}}
 		]
 	}" "$ADMIN_TOKEN") || exit 1
-	READ_TOKEN=$(json_field "$READ_TOKEN_RESPONSE" "['token']") || exit 1
+	READ_TOKEN=$(json_field "$READ_TOKEN_RESPONSE" ".token") || exit 1
 	write_state_file
 fi
 
@@ -279,56 +352,30 @@ fi
 # Create a write-only token for the support_metrics bucket (skipped if already persisted).
 #
 if [[ -z "$SUPPORT_WRITE_TOKEN" ]]; then
-	SUPPORT_WRITE_TOKEN_RESPONSE=$(influx_post "/api/v2/authorizations" "{
+	SUPPORT_WRITE_TOKEN_RESPONSE=$(influx_api POST "/api/v2/authorizations" "{
 		\"orgID\": \"$ORG_ID\",
 		\"description\": \"telegraf-support-write-token\",
 		\"permissions\": [
 			{\"action\": \"write\", \"resource\": {\"type\": \"buckets\", \"id\": \"$SUPPORT_BUCKET_ID\", \"orgID\": \"$ORG_ID\"}}
 		]
 	}" "$ADMIN_TOKEN") || exit 1
-	SUPPORT_WRITE_TOKEN=$(json_field "$SUPPORT_WRITE_TOKEN_RESPONSE" "['token']") || exit 1
+	SUPPORT_WRITE_TOKEN=$(json_field "$SUPPORT_WRITE_TOKEN_RESPONSE" ".token") || exit 1
 	write_state_file
 fi
 
 #
-# Write two [[outputs.influxdb_v2]] stanzas to a dedicated telegraf output file:
-#   - default bucket: Grafana-facing measurements currently used in dashboards:
-#     cpu, disk, diskio, net, tcp_stats, zfs,
-#     estat_nfs, estat_iscsi, hist_estat_nfs, hist_estat_iscsi, hist_estat_backend-io
-#   - support_metrics bucket: everything else (not yet in any dashboard panel)
-# The flag is read by delphix-telegraf-service to conditionally include this output.
+# Write the Telegraf output stanzas derived from the canonical measurements list.
 #
-cat >"$INFLUXDB_OUTPUT" <<EOF
-[[outputs.influxdb_v2]]
-  urls = ["http://127.0.0.1:8086"]
-  token = "$WRITE_TOKEN"
-  organization = "$INFLUXDB_ORG"
-  bucket = "$INFLUXDB_BUCKET"
-  namepass = ["cpu", "disk", "diskio", "net", "tcp_stats", "zfs",
-    "estat_nfs", "estat_iscsi",
-    "hist_estat_nfs", "hist_estat_iscsi", "hist_estat_backend-io"]
-
-[[outputs.influxdb_v2]]
-  urls = ["http://127.0.0.1:8086"]
-  token = "$SUPPORT_WRITE_TOKEN"
-  organization = "$INFLUXDB_ORG"
-  bucket = "$INFLUXDB_SUPPORT_BUCKET"
-  namedrop = ["cpu", "disk", "diskio", "net", "tcp_stats", "zfs",
-    "estat_nfs", "estat_iscsi",
-    "hist_estat_nfs", "hist_estat_iscsi", "hist_estat_backend-io"]
-EOF
-# Enforce restrictive permissions so the write tokens are not world-readable.
-chmod 640 "$INFLUXDB_OUTPUT"
+write_telegraf_output "$WRITE_TOKEN" "$SUPPORT_WRITE_TOKEN"
 touch "$INFLUXDB_FLAG"
 
 #
 # Persist org/bucket/admin credentials/tokens so DE APIs can expose them to DCT
 # and so the admin can access the InfluxDB UI. File is chmod 600 (root-only).
-# INFLUXDB_SUPPORT_WRITE_TOKEN is included so re-running init can regenerate
+# INFLUXDB_ADMIN_TOKEN is stored so future runs can reconcile bucket configuration.
+# INFLUXDB_SUPPORT_WRITE_TOKEN is stored so re-running init can regenerate
 # telegraf.outputs.influxdb if it is ever deleted.
 #
-# Use a restrictive umask and a temp file to avoid a window where tokens are
-# readable by non-root users, then atomically move the file into place.
 old_umask="$(umask)"
 umask 077
 tmp_meta="$(mktemp "${INFLUXDB_META_FILE}.XXXXXX")"
@@ -340,6 +387,7 @@ INFLUXDB_SUPPORT_BUCKET=$INFLUXDB_SUPPORT_BUCKET
 INFLUXDB_SUPPORT_BUCKET_ID=$SUPPORT_BUCKET_ID
 INFLUXDB_ADMIN_USER=$INFLUXDB_ADMIN_USER
 INFLUXDB_ADMIN_PASSWORD=$INFLUXDB_ADMIN_PASSWORD
+INFLUXDB_ADMIN_TOKEN=$ADMIN_TOKEN
 INFLUXDB_WRITE_TOKEN=$WRITE_TOKEN
 INFLUXDB_READ_TOKEN=$READ_TOKEN
 INFLUXDB_SUPPORT_WRITE_TOKEN=$SUPPORT_WRITE_TOKEN
