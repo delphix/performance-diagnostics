@@ -122,8 +122,10 @@ BPF_HASH($hist.name$, nfs_hist_key_t, u64);
 }$
 
 // Probe functions to initialize thread local data
+// Kernel signature: __be32 nfsd_read(struct svc_rqst *rqstp,
+//     struct svc_fh *fhp, off_t offset, unsigned long *count, u32 *eof)
 int nfsd3_read_start(struct pt_regs *ctx, struct svc_rqst *rqstp, void *fhp,
-    u64 offset, void *vec, int vlen, u32 *count)
+    loff_t offset, unsigned long *count, u32 *eof)
 {
     u32 pid = bpf_get_current_pid_tgid();
     nfs_data_t data = {};
@@ -136,8 +138,12 @@ int nfsd3_read_start(struct pt_regs *ctx, struct svc_rqst *rqstp, void *fhp,
     return 0;
 }
 
+// Kernel signature: __be32 nfsd_write(
+//     struct svc_rqst *rqstp, struct svc_fh *fhp,
+//     loff_t offset, struct kvec *vec, int vlen, unsigned long *cnt,
+//     int stable, __be32 *verf)
 int nfsd3_write_start(struct pt_regs *ctx, struct svc_rqst *rqstp, void *fhp,
-    u64 offset, void *vec, int vlen, u32 *count)
+    loff_t offset, void *vec, int vlen, unsigned long *count)
 {
     u32 pid = bpf_get_current_pid_tgid();
     nfs_data_t data = {};
@@ -244,7 +250,10 @@ static int nfsd3_aggregate_data(u64 ts, char *opstr)
     if (data == 0) {
         return 0;   // missed issue
     }
-    bpf_probe_read(&data->size, sizeof(u32), data->write_arg);
+    // Kernel stores the byte count in an unsigned long (8 bytes on x86_64) for
+    // both nfsd_read (arg 4) and nfsd_write (arg 6). Read the full width into
+    // data->size (u64) rather than truncating to 32 bits.
+    bpf_probe_read(&data->size, sizeof(unsigned long), data->write_arg);
 
     aggregate_data(data, ts, opstr, NFSV3_STR);
     nfs_base_data.delete(&pid);
