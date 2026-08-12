@@ -1,0 +1,16 @@
+[Unit]
+Description=Delphix InfluxDB Time Series Database
+Documentation=https://docs.influxdata.com/influxdb/v2/
+PartOf=delphix.target
+After=delphix-platform.service
+PartOf=delphix-platform.service
+
+[Service]
+User=root
+ExecStart=/usr/bin/delphix-influxdb-service
+Restart=always
+RestartForceExitStatus=SIGPIPE
+KillMode=control-group
+
+[Install]
+WantedBy=delphix.target
