@@ -403,14 +403,28 @@ if dump_bpf:
 
 # Load BPF program
 KVER = os.popen('uname -r').read().rstrip()
-cflags = ["-include",
-          "/usr/src/zfs-" + KVER + "/zfs_config.h",
-          "-include",
-          "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
-          "-I/usr/src/zfs-" + KVER + "/include/",
-          "-I/usr/src/zfs-" + KVER + "/include/spl",
-          "-D__KERNEL__",
-          "-D_KERNEL"]
+
+# On kernel 7.0.0-1011+, the ZFS SPL ns_common_types.h lacks ns_id and
+# __ns_ref_active (now embedded via struct ns_tree in struct ns_common).
+# Adding the linux-aws kernel headers path first ensures the correct
+# ns_common_types.h is resolved before the ZFS SPL version, preventing
+# "no member named 'ns_id'" BCC compilation errors. DLPX-98669
+import glob as _glob
+_kver_base = KVER[:-4] if KVER.endswith('-aws') else KVER
+_aws_hdr_dirs = _glob.glob(
+    "/usr/src/linux-aws*-headers-" + _kver_base + "*/include")
+
+cflags = []
+for _d in _aws_hdr_dirs:
+    cflags.extend(["-I", _d])
+cflags.extend(["-include",
+               "/usr/src/zfs-" + KVER + "/zfs_config.h",
+               "-include",
+               "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
+               "-I/usr/src/zfs-" + KVER + "/include/",
+               "-I/usr/src/zfs-" + KVER + "/include/spl",
+               "-D__KERNEL__",
+               "-D_KERNEL"])
 if script_arg:
     cflags.append("-DOPTARG=\"" + script_arg + "\"")
 
