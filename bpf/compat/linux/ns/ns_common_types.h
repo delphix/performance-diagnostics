@@ -3,34 +3,18 @@
 #define _LINUX_NS_COMMON_TYPES_H
 
 /*
- * BCC/Clang compat for kernel 7.0.0-1011+ (DLPX-98669).
- * Force-included as the first user cflag in estat.py before ZFS preamble.
- *
- * Key observations about the BCC compilation environment:
- * - BCC's built-in preamble defines atomic_t (do NOT redefine)
- * - BCC's preamble does NOT define refcount_t (must define here)
- * - Setting _LINUX_REFCOUNT_TYPES_H prevents the real refcount_types.h from
- *   causing a typedef redefinition conflict later
- *
- * Fixes three fatal BCC/Clang errors:
- * 1. "no member named 'ns_id' in struct ns_common": GCC anonymous-embed
- *    "union { struct ns_tree; ... }" not supported by Clang. Provide flat
- *    struct with ns_id and __ns_ref_active as direct members. Anonymous
- *    struct member (for __ns_ref) must have NO name/attribute — Clang only
- *    supports true anonymous structs (unnamed, no attribute on closing brace).
- * 2. fs.h static_assert failure: suppress via macro.
- * 3. bpf.h identifier mismatches: map BPF_TRACE_FSESSION, BPF_F_CPU, etc.
+ * BCC/Clang compat header, force-included before the ZFS SPL preamble in
+ * estat.py.  Fixes three compilation errors that arise when BCC compiles
+ * BPF programs with the ZFS preamble on kernel 7.0+.
  */
 
-/* ── Fix 2: suppress fs.h static_assert ────────────────────────────────── */
-/*
- * build_bug.h (included by BCC's preamble) defines static_assert before
- * this file runs. #undef first so our no-op definition takes effect.
- */
+/* fs.h contains a static_assert that fails under BCC/Clang due to a
+ * GCC/Clang difference in anonymous-struct sizing.  #undef first because
+ * build_bug.h in BCC's preamble has already defined static_assert. */
 #undef static_assert
-#define static_assert(...) /* disabled — Clang/GCC struct-size mismatch */
+#define static_assert(...)
 
-/* ── Fix 3: bpf.h identifier mismatches ────────────────────────────────── */
+/* kernel 7.0+ added these bpf.h identifiers; BCC's bundled bpf.h lacks them */
 #ifndef BPF_TRACE_FSESSION
 #define BPF_TRACE_FSESSION BPF_TRAMP_FSESSION
 #endif
@@ -41,50 +25,44 @@
 #define BPF_F_ALL_CPUS 0ULL
 #endif
 
-/* ── Fix 1: Clang-compatible flat struct ns_common ──────────────────────── */
 /*
- * Only apply the struct ns_common fix when <linux/ns/ns_common_types.h>
- * actually exists in the include path. On kernels < 7.0, struct ns_common
- * is defined directly in ns_common.h (no separate types file), so our
- * guard + definition would cause a redefinition error. __has_include lets
- * us detect whether the types file is present at compile time.
+ * kernel 7.0+ ns_common_types.h uses "union { struct ns_tree; ... }" to
+ * embed ns_id and __ns_ref_active into struct ns_common.  Clang treats
+ * "struct ns_tree;" as a forward declaration, not an anonymous embed, so
+ * those fields are invisible and ns_common.h inline functions fail to
+ * compile.  Provide a Clang-compatible flat definition.
+ *
+ * Gated on __has_include: on kernels < 7.0, struct ns_common is defined
+ * directly in ns_common.h (no separate types file), so setting this guard
+ * and defining the struct here would cause a redefinition error.
  */
 #if __has_include(<linux/ns/ns_common_types.h>)
 
-/* refcount_t: not in BCC's preamble; define here and suppress real header */
+/* refcount_t is not provided by BCC's built-in preamble; suppress the real
+ * refcount_types.h to avoid a typedef redefinition conflict.
+ * atomic_t IS in BCC's preamble — do not redefine it. */
 #ifndef _LINUX_REFCOUNT_TYPES_H
 #define _LINUX_REFCOUNT_TYPES_H
-/* atomic_t is already defined by BCC's built-in preamble */
 typedef struct { atomic_t refs; } refcount_t;
 #endif
 
 struct dentry;
 struct proc_ns_operations;
 
-/*
- * Clang-compatible flat struct ns_common.
- * The __ns_ref anonymous sub-struct has NO name or attribute on the closing
- * brace — Clang requires truly nameless structs for anonymous embedding.
- * The ____cacheline_aligned_in_smp attribute is dropped; the struct layout
- * is not critical for BCC type-checking of BPF programs.
- */
 struct ns_common {
 	struct {
 		refcount_t __ns_ref;
-	};                              /* anonymous — no name, no attribute */
+	};			/* nameless — Clang requires no name/attr for anonymous embedding */
 	unsigned int ns_type;
 	struct dentry *stashed;
 	const struct proc_ns_operations *ops;
 	unsigned int inum;
-	unsigned long ns_id;		/* from struct ns_tree (kernel 7.0+) */
-	atomic_t __ns_ref_active;	/* from struct ns_tree (kernel 7.0+) */
+	unsigned long ns_id;		/* promoted from struct ns_tree */
+	atomic_t __ns_ref_active;	/* promoted from struct ns_tree */
 };
 
-/*
- * Macros from the real ns_common_types.h used by user_namespace.h.
- * Minimal stubs so headers that include ns_common_types.h compile without
- * errors. BPF programs never call these at runtime.
- */
+/* Stubs for _Generic macros defined in the real ns_common_types.h.
+ * Referenced by user_namespace.h headers; never called at BPF runtime. */
 #ifndef to_ns_common
 #define to_ns_common(x) ((struct ns_common *)&(x)->ns)
 #endif

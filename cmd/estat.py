@@ -404,23 +404,18 @@ if dump_bpf:
 # Load BPF program
 KVER = os.popen('uname -r').read().rstrip()
 
-# backend-io uses only standard Linux block device types and no ZFS kernel
-# symbols, so it does not need the ZFS SPL preamble. On kernel 7.0.0-1011+
-# the ZFS SPL preamble causes fatal BCC/Clang errors. Skip it for
-# backend-io only. DLPX-98669
+# backend-io accesses no ZFS kernel symbols, so it does not need the ZFS
+# SPL preamble (zfs_config.h + spl/sys/types.h) that causes BCC/Clang
+# compilation errors on newer kernels.
 if program == 'backend-io':
     cflags = []
 else:
-    # Force-include compat/linux/ns/ns_common_types.h first to fix three
-    # fatal BCC/Clang errors on kernel 7.0.0-1011+ (DLPX-98669):
-    #  1. ns_common: Clang rejects GCC anonymous struct embed struct ns_tree;
-    #  2. fs.h: static_assert(sizeof(struct filename) % 64 == 0) fails
-    #  3. bpf.h: BPF_TRACE_FSESSION / BPF_F_CPU / BPF_F_ALL_CPUS undefined
-    # Using -include (not -I) so the guard is set before BCC's internal
-    # linux-aws headers path is searched. DLPX-98669
-    # base_dir resolves to the repo root when running from checkout, or to
-    # /usr/share/performance-diagnostics/ when running from the installed
-    # package — same pattern used above for programs_dir and standalones_dir.
+    # Force-include the compat header before the ZFS preamble so its
+    # include guards take effect before BCC's internal header search runs.
+    # Uses -include rather than -I because -I paths are overridden by BCC's
+    # internal linux-aws headers path.
+    # base_dir is the repo root (checkout) or the install prefix — same
+    # pattern used for programs_dir and standalones_dir.
     _compat_ns = base_dir + "bpf/compat/linux/ns/ns_common_types.h"
     cflags = ["-include", _compat_ns,
               "-include",
