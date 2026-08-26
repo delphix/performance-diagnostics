@@ -9,23 +9,13 @@
 #include <uapi/linux/bpf.h>
 
 /*
- * Avoid block-layer kernel headers on kernel 7.0.0-1011+.  <linux/bpf_common.h>
- * above is safe (no fs.h chain), but <linux/blkdev.h>, <linux/blk-mq.h>, and
- * <linux/blk_types.h> all transitively include <linux/fs.h>, which contains
- * a static_assert(sizeof(struct filename) % 64 == 0) that fails under
- * BCC/Clang (Clang computes 40, not a multiple of 64).  That assert is
- * a fatal compilation error that prevents the BPF module from loading.
+ * Avoid block-layer kernel headers: <linux/blkdev.h>, <linux/blk-mq.h>, and
+ * <linux/blk_types.h> all chain to <linux/fs.h>, which has a Clang-fatal
+ * static_assert on sizeof(struct filename).  <linux/bpf_common.h> above is
+ * safe — it does not reach fs.h.  cmd/estat.py skips the ZFS SPL preamble
+ * for this program since it accesses no ZFS kernel symbols.
  *
- * backend-io uses no ZFS kernel symbols, so cmd/estat.py skips the ZFS SPL
- * preamble (zfs_config.h + spl/sys/types.h) entirely for this program.
- * The three ZFS-preamble BCC/Clang errors (ns_common, fs.h, bpf.h) handled
- * for other estat programs by bpf/compat/linux/ns/ns_common_types.h do not
- * apply here.
- *
- * Forward-declare only the types and constants this program accesses.
- * Field offsets verified against kernel 7.0.0-1011-dx2026082023 headers
- * and confirmed via sizeof(enum rw_hint)==1 (rw_hint.h static_assert).
- * DLPX-98669
+ * Forward-declare only the structs and constants this program accesses.
  */
 
 typedef unsigned char       blk_status_t;
