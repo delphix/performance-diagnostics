@@ -42,6 +42,14 @@
 #endif
 
 /* ── Fix 1: Clang-compatible flat struct ns_common ──────────────────────── */
+/*
+ * Only apply the struct ns_common fix when <linux/ns/ns_common_types.h>
+ * actually exists in the include path. On kernels < 7.0, struct ns_common
+ * is defined directly in ns_common.h (no separate types file), so our
+ * guard + definition would cause a redefinition error. __has_include lets
+ * us detect whether the types file is present at compile time.
+ */
+#if __has_include(<linux/ns/ns_common_types.h>)
 
 /* refcount_t: not in BCC's preamble; define here and suppress real header */
 #ifndef _LINUX_REFCOUNT_TYPES_H
@@ -73,10 +81,9 @@ struct ns_common {
 };
 
 /*
- * to_ns_common / ns_init_* macros from the real ns_common_types.h.
- * Provide minimal definitions so code that includes ns_common_types.h via
- * user_namespace.h compiles without errors. BPF programs do not call these
- * at runtime.
+ * Macros from the real ns_common_types.h used by user_namespace.h.
+ * Minimal stubs so headers that include ns_common_types.h compile without
+ * errors. BPF programs never call these at runtime.
  */
 #ifndef to_ns_common
 #define to_ns_common(x) ((struct ns_common *)&(x)->ns)
@@ -96,5 +103,7 @@ struct ns_common {
 #ifndef ns_common_type
 #define ns_common_type(x) (0U)
 #endif
+
+#endif /* __has_include(<linux/ns/ns_common_types.h>) */
 
 #endif /* _LINUX_NS_COMMON_TYPES_H */
