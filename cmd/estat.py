@@ -418,8 +418,10 @@ else:
     #  3. bpf.h: BPF_TRACE_FSESSION / BPF_F_CPU / BPF_F_ALL_CPUS undefined
     # Using -include (not -I) so the guard is set before BCC's internal
     # linux-aws headers path is searched. DLPX-98669
-    _perf_diag_share = "/usr/share/performance-diagnostics"
-    _compat_ns = _perf_diag_share + "/bpf/compat/linux/ns/ns_common_types.h"
+    # base_dir resolves to the repo root when running from checkout, or to
+    # /usr/share/performance-diagnostics/ when running from the installed
+    # package — same pattern used above for programs_dir and standalones_dir.
+    _compat_ns = base_dir + "bpf/compat/linux/ns/ns_common_types.h"
     cflags = ["-include", _compat_ns,
               "-include",
               "/usr/src/zfs-" + KVER + "/zfs_config.h",
