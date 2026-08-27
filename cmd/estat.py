@@ -403,14 +403,29 @@ if dump_bpf:
 
 # Load BPF program
 KVER = os.popen('uname -r').read().rstrip()
-cflags = ["-include",
-          "/usr/src/zfs-" + KVER + "/zfs_config.h",
-          "-include",
-          "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
-          "-I/usr/src/zfs-" + KVER + "/include/",
-          "-I/usr/src/zfs-" + KVER + "/include/spl",
-          "-D__KERNEL__",
-          "-D_KERNEL"]
+
+# backend-io accesses no ZFS kernel symbols, so it does not need the ZFS
+# SPL preamble (zfs_config.h + spl/sys/types.h) that causes BCC/Clang
+# compilation errors on newer kernels.
+if program == 'backend-io':
+    cflags = []
+else:
+    # Force-include the compat header before the ZFS preamble so its
+    # include guards take effect before BCC's internal header search runs.
+    # Uses -include rather than -I because -I paths are overridden by BCC's
+    # internal linux-aws headers path.
+    # base_dir is the repo root (checkout) or the install prefix — same
+    # pattern used for programs_dir and standalones_dir.
+    _compat_ns = base_dir + "bpf/compat/linux/ns/ns_common_types.h"
+    cflags = ["-include", _compat_ns,
+              "-include",
+              "/usr/src/zfs-" + KVER + "/zfs_config.h",
+              "-include",
+              "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
+              "-I/usr/src/zfs-" + KVER + "/include/",
+              "-I/usr/src/zfs-" + KVER + "/include/spl",
+              "-D__KERNEL__",
+              "-D_KERNEL"]
 if script_arg:
     cflags.append("-DOPTARG=\"" + script_arg + "\"")
 
