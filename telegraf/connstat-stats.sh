@@ -87,6 +87,8 @@ END {
 }
 '
 # Prevent tight CPU spin if connstat exits immediately (e.g. binary missing
-# or kernel module unavailable). Normal runs take ~20s so this adds no delay.
-sleep 5
+# or kernel module unavailable). sleep 10 keeps consecutive samples exactly
+# 10 s apart: connstat outputs sample 1 at T=0 and sample 2 at T=10, exits,
+# then sleep 10 brings the next sample 1 to T=20, T=30, etc.
+sleep 10
 done
