@@ -26,6 +26,7 @@ while true; do
     -o laddr,lport,raddr,rport,inbytes,outbytes,retranssegs,suna,unsent,swnd,cwnd,rwnd,rtt \
     | awk -F',' '
 BEGIN {
+    batch_ts = 0
     # Load port->service mapping from /etc/services, same as LocalTCPStatsCollector.
     # Pattern matches lines of the form: "servicename  port/tcp"
     while ((getline line < "/etc/services") > 0) {
@@ -52,9 +53,10 @@ BEGIN {
         split(key, k, SUBSEP)
         print k[1] "," k[2] "," k[3] "," \
               inb[key] "," outb[key] "," ret[key] "," sun[key] "," uns[key] "," \
-              int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n
+              int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n "," batch_ts
     }
     fflush()
+    ts = $0; sub(/^=[[:space:]]*/, "", ts); batch_ts = ts + 0
     delete cnt; delete inb; delete outb; delete ret
     delete sun; delete uns; delete sw; delete cw; delete rw; delete rt
     next
@@ -79,7 +81,7 @@ END {
         split(key, k, SUBSEP)
         print k[1] "," k[2] "," k[3] "," \
               inb[key] "," outb[key] "," ret[key] "," sun[key] "," uns[key] "," \
-              int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n
+              int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n "," batch_ts
     }
     fflush()
 }
