@@ -15,6 +15,10 @@
 # delphix-influxdb-init to /etc/telegraf/telegraf.outputs.influxdb and
 # appended here by delphix-telegraf-service when InfluxDB is enabled.
 # Use 'perf_influxdb enable|disable' to toggle and restart Telegraf.
+#
+# Consumers outside this package (e.g. additional outputs) should not edit
+# this file — drop a self-contained *.conf file into /etc/telegraf/telegraf.d
+# instead, which delphix-telegraf-service loads via -config-directory.
 
 ###############################################################################
 #                            INPUT PLUGINS                                    #
