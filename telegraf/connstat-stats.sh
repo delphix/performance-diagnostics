@@ -18,13 +18,11 @@
 #
 # mawk (the default awk on Delphix engines) does not flush its stdout buffer
 # when writing to a Telegraf execd pipe, even with explicit fflush() calls.
-# Wrapping connstat in a loop with -c 2 causes awk to exit naturally after
-# each 10-second interval, which triggers the C runtime exit flush (fclose)
-# and reliably delivers data to Telegraf.
-while true; do
-/usr/bin/connstat -PLe -i 10 -c 2 -T u \
+# stdbuf -oL forces line-buffered stdout on awk, so each output line is
+# delivered to Telegraf immediately without needing awk to exit.
+/usr/bin/connstat -PLe -i 10 -T u \
     -o laddr,lport,raddr,rport,inbytes,outbytes,retranssegs,suna,unsent,swnd,cwnd,rwnd,rtt \
-    | awk -F',' '
+    | stdbuf -oL awk -F',' '
 BEGIN {
     batch_ts = 0
     # Load port->service mapping from /etc/services, same as LocalTCPStatsCollector.
@@ -86,9 +84,3 @@ END {
     fflush()
 }
 '
-# Prevent tight CPU spin if connstat exits immediately (e.g. binary missing
-# or kernel module unavailable). sleep 10 keeps consecutive samples exactly
-# 10 s apart: connstat outputs sample 1 at T=0 and sample 2 at T=10, exits,
-# then sleep 10 brings the next sample 1 to T=20, T=30, etc.
-sleep 10
-done
