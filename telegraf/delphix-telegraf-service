@@ -8,6 +8,7 @@ INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
 PLAYBOOK_FLAG=/etc/telegraf/PLAYBOOK_ENABLED
 INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
 TELEGRAF_CONFIG=/etc/telegraf/telegraf.conf
+TELEGRAF_CONFIG_DIR=/etc/telegraf/telegraf.d
 
 
 function engine_is_dct() {
@@ -68,4 +69,24 @@ fi
 # the InfluxDB write token is not world-readable when InfluxDB is enabled.
 chmod 640 $TELEGRAF_CONFIG
 
-/usr/bin/telegraf -config $TELEGRAF_CONFIG
+# Extension point for outputs/inputs owned outside this package — drop a self-
+# contained *.conf file here instead of editing this package's own config files.
+#
+# Telegraf runs as root and *.conf files here may contain plugins (inputs.exec,
+# outputs.exec, etc.) that execute arbitrary commands as root, so lock this
+# down to root-only.
+#
+# Currently, the product does not use this drop-in directory, so if we can't
+# confirm these permissions, just run the service without the drop-in directory.
+# If at any point the product configuration starts using the drop-in directory,
+# this behavior should be updated to fail the service so that we know we are
+# running with the correct configuration.
+#
+CONFIG_DIR_ARGS=()
+if mkdir -p $TELEGRAF_CONFIG_DIR && chown root:root $TELEGRAF_CONFIG_DIR && chmod 700 $TELEGRAF_CONFIG_DIR; then
+	CONFIG_DIR_ARGS=(-config-directory "$TELEGRAF_CONFIG_DIR")
+else
+	logger -t delphix-telegraf "ERROR: failed to lock down $TELEGRAF_CONFIG_DIR permissions — starting Telegraf without drop-in config support."
+fi
+
+/usr/bin/telegraf -config $TELEGRAF_CONFIG "${CONFIG_DIR_ARGS[@]}"
