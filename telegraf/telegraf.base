@@ -77,9 +77,11 @@
   data_format = "csv"
   csv_delimiter = ","
   csv_trim_space = true
-  csv_column_names = ["laddr", "raddr", "service", "inbytes", "outbytes", "retranssegs", "suna", "unsent", "swnd", "cwnd", "rwnd", "rtt", "connections"]
-  csv_column_types = ["string", "string", "string", "int", "int", "int", "int", "int", "int", "int", "int", "int", "int"]
+  csv_column_names = ["laddr", "raddr", "service", "inbytes", "outbytes", "retranssegs", "suna", "unsent", "swnd", "cwnd", "rwnd", "rtt", "connections", "ts"]
+  csv_column_types = ["string", "string", "string", "int", "int", "int", "int", "int", "int", "int", "int", "int", "int", "int"]
   csv_tag_columns = ["laddr", "raddr", "service"]
+  csv_timestamp_column = "ts"
+  csv_timestamp_format = "unix"
 
 # Track CPU and Memory for the "delphix-mgmt" service (and children).
 [[inputs.procstat]]
