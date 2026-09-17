@@ -18,14 +18,13 @@
 #
 # mawk (the default awk on Delphix engines) does not flush its stdout buffer
 # when writing to a Telegraf execd pipe, even with explicit fflush() calls.
-# Wrapping connstat in a loop with -c 2 causes awk to exit naturally after
-# each 10-second interval, which triggers the C runtime exit flush (fclose)
-# and reliably delivers data to Telegraf.
-while true; do
-/usr/bin/connstat -PLe -i 10 -c 2 -T u \
+# stdbuf -oL forces line-buffered stdout on awk, so each output line is
+# delivered to Telegraf immediately without needing awk to exit.
+/usr/bin/connstat -PLe -i 10 -T u \
     -o laddr,lport,raddr,rport,inbytes,outbytes,retranssegs,suna,unsent,swnd,cwnd,rwnd,rtt \
-    | awk -F',' '
+    | stdbuf -oL awk -F',' '
 BEGIN {
+    batch_ts = 0
     # Load port->service mapping from /etc/services, same as LocalTCPStatsCollector.
     # Pattern matches lines of the form: "servicename  port/tcp"
     while ((getline line < "/etc/services") > 0) {
@@ -52,9 +51,10 @@ BEGIN {
         split(key, k, SUBSEP)
         print k[1] "," k[2] "," k[3] "," \
               inb[key] "," outb[key] "," ret[key] "," sun[key] "," uns[key] "," \
-              int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n
+              int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n "," batch_ts
     }
     fflush()
+    ts = $0; sub(/^=[[:space:]]*/, "", ts); batch_ts = ts + 0
     delete cnt; delete inb; delete outb; delete ret
     delete sun; delete uns; delete sw; delete cw; delete rw; delete rt
     next
@@ -79,12 +79,8 @@ END {
         split(key, k, SUBSEP)
         print k[1] "," k[2] "," k[3] "," \
               inb[key] "," outb[key] "," ret[key] "," sun[key] "," uns[key] "," \
-              int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n
+              int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n "," batch_ts
     }
     fflush()
 }
 '
-# Prevent tight CPU spin if connstat exits immediately (e.g. binary missing
-# or kernel module unavailable). Normal runs take ~20s so this adds no delay.
-sleep 5
-done
