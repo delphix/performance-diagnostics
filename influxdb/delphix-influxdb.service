@@ -3,6 +3,7 @@ Description=Delphix InfluxDB Time Series Database
 Documentation=https://docs.influxdata.com/influxdb/v2/
 PartOf=delphix.target
 After=delphix-platform.service
+After=zfs-object-agent.service
 PartOf=delphix-platform.service
 
 [Service]

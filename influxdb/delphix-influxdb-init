@@ -183,9 +183,13 @@ if [[ "$ready" != "true" ]]; then
 	exit 1
 fi
 
-# When fully initialized, reconcile bucket retention against current conf and exit.
-# This ensures retention changes in influxdb-init.conf take effect on the next run
-# rather than being silently ignored after initial setup.
+# When fully initialized, validate stored tokens then reconcile bucket retention
+# and exit. Token validation catches the OCI-engine failure mode where the
+# object-backed /var/lib/influxdb dataset rolls back (power cycle or storage
+# disruption during upgrade) while /etc/telegraf/telegraf.outputs.influxdb on
+# rpool survives — leaving Telegraf with a permanently stale write token.
+# Checking file existence alone is not sufficient; we must confirm InfluxDB still
+# recognises the admin token before treating the installation as healthy.
 if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
 	log "InfluxDB already initialized, checking for configuration drift."
 	ADMIN_TOKEN=""; BUCKET_ID=""; SUPPORT_BUCKET_ID=""
@@ -199,24 +203,37 @@ if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
 		esac
 	done <"$INFLUXDB_META_FILE"
 
-	if [[ -n "$ADMIN_TOKEN" && -n "$BUCKET_ID" && -n "$SUPPORT_BUCKET_ID" ]]; then
-		for _pair in \
-			"$BUCKET_ID:$INFLUXDB_RETENTION_SECONDS" \
-			"$SUPPORT_BUCKET_ID:$INFLUXDB_SUPPORT_RETENTION_SECONDS"; do
-			_bid="${_pair%%:*}"
-			_desired="${_pair##*:}"
-			_bucket_json=$(influx_api GET "/api/v2/buckets/$_bid" "" "$ADMIN_TOKEN") || continue
-			_current=$(jq -r '.retentionRules[0].everySeconds // "0"' <<< "$_bucket_json")
-			if [[ "$_current" != "$_desired" ]]; then
-				log "Updating bucket $_bid retention: ${_current}s → ${_desired}s"
-				influx_api PATCH "/api/v2/buckets/$_bid" \
-					"{\"retentionRules\":[{\"type\":\"expire\",\"everySeconds\":$_desired}]}" \
-					"$ADMIN_TOKEN" >/dev/null || \
-					log "WARNING: Failed to update retention for bucket $_bid — will retry on next run."
-			fi
-		done
+	# Validate the stored admin token against the live InfluxDB instance.
+	# A non-200 response means the bolt file was reset and all tokens are gone;
+	# clear stale state and fall through to full re-initialization below.
+	_token_http=$(curl -s -o /dev/null -w '%{http_code}' \
+		-H "Authorization: Token ${ADMIN_TOKEN:-}" \
+		"$INFLUXDB_URL/api/v2/authorizations")
+	if [[ "$_token_http" != "200" ]]; then
+		log "WARNING: Stored ADMIN_TOKEN rejected by InfluxDB (HTTP $_token_http)." \
+			" Auth store was likely reset. Clearing stale state and re-initializing."
+		rm -f "$INFLUXDB_META_FILE" "$INFLUXDB_SETUP_STATE_FILE" "$INFLUXDB_OUTPUT"
+		# Fall through to re-initialization — do not exit here.
+	else
+		if [[ -n "$ADMIN_TOKEN" && -n "$BUCKET_ID" && -n "$SUPPORT_BUCKET_ID" ]]; then
+			for _pair in \
+				"$BUCKET_ID:$INFLUXDB_RETENTION_SECONDS" \
+				"$SUPPORT_BUCKET_ID:$INFLUXDB_SUPPORT_RETENTION_SECONDS"; do
+				_bid="${_pair%%:*}"
+				_desired="${_pair##*:}"
+				_bucket_json=$(influx_api GET "/api/v2/buckets/$_bid" "" "$ADMIN_TOKEN") || continue
+				_current=$(jq -r '.retentionRules[0].everySeconds // "0"' <<< "$_bucket_json")
+				if [[ "$_current" != "$_desired" ]]; then
+					log "Updating bucket $_bid retention: ${_current}s → ${_desired}s"
+					influx_api PATCH "/api/v2/buckets/$_bid" \
+						"{\"retentionRules\":[{\"type\":\"expire\",\"everySeconds\":$_desired}]}" \
+						"$ADMIN_TOKEN" >/dev/null || \
+						log "WARNING: Failed to update retention for bucket $_bid — will retry on next run."
+				fi
+			done
+		fi
+		exit 0
 	fi
-	exit 0
 fi
 
 #
@@ -236,6 +253,8 @@ SUPPORT_WRITE_TOKEN=""
 if [[ -f "$INFLUXDB_META_FILE" ]]; then
 	# Meta file exists but output file is missing — read stored tokens and
 	# regenerate the output file without repeating any InfluxDB API calls.
+	# First validate the stored admin token: if it is rejected, the bolt file
+	# was reset (OCI engine storage rollback) and re-initialization is required.
 	while IFS= read -r line; do
 		[[ "$line" =~ ^[[:space:]]*# ]] && continue
 		key="${line%%=*}"
@@ -244,6 +263,7 @@ if [[ -f "$INFLUXDB_META_FILE" ]]; then
 			INFLUXDB_ORG)                INFLUXDB_ORG="$value" ;;
 			INFLUXDB_BUCKET)             INFLUXDB_BUCKET="$value" ;;
 			INFLUXDB_SUPPORT_BUCKET)     INFLUXDB_SUPPORT_BUCKET="$value" ;;
+			INFLUXDB_ADMIN_TOKEN)        ADMIN_TOKEN="$value" ;;
 			INFLUXDB_WRITE_TOKEN)        WRITE_TOKEN="$value" ;;
 			INFLUXDB_SUPPORT_WRITE_TOKEN) SUPPORT_WRITE_TOKEN="$value" ;;
 		esac
@@ -252,11 +272,21 @@ if [[ -f "$INFLUXDB_META_FILE" ]]; then
 		log "ERROR: Could not read required tokens from $INFLUXDB_META_FILE."
 		exit 1
 	fi
-	write_telegraf_output "$WRITE_TOKEN" "$SUPPORT_WRITE_TOKEN"
-	touch "$INFLUXDB_FLAG"
-	log "InfluxDB output file regenerated from stored credentials."
-	systemctl restart delphix-telegraf 2>/dev/null || true
-	exit 0
+	_token_http=$(curl -s -o /dev/null -w '%{http_code}' \
+		-H "Authorization: Token ${ADMIN_TOKEN:-}" \
+		"$INFLUXDB_URL/api/v2/authorizations")
+	if [[ "$_token_http" != "200" ]]; then
+		log "WARNING: Stored tokens are no longer valid (HTTP $_token_http)." \
+			" InfluxDB auth store was reset. Clearing stale state and re-initializing."
+		rm -f "$INFLUXDB_META_FILE" "$INFLUXDB_SETUP_STATE_FILE"
+		# Fall through to fresh setup — do not write stale tokens to output file.
+	else
+		write_telegraf_output "$WRITE_TOKEN" "$SUPPORT_WRITE_TOKEN"
+		touch "$INFLUXDB_FLAG"
+		log "InfluxDB output file regenerated from stored credentials."
+		systemctl restart delphix-telegraf 2>/dev/null || true
+		exit 0
+	fi
 
 elif [[ -f "$INFLUXDB_SETUP_STATE_FILE" ]]; then
 	while IFS= read -r line; do
