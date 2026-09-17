@@ -283,9 +283,9 @@ if [[ -f "$INFLUXDB_META_FILE" ]]; then
 		"$INFLUXDB_URL/api/v2/authorizations")
 	if [[ "$_token_http" == "401" || "$_token_http" == "403" ]]; then
 		log "WARNING: Stored tokens rejected by InfluxDB (HTTP $_token_http)." \
-			" Auth store was likely reset. Clearing stale state and re-initializing."
+			" Auth store was likely reset. Clearing stale state; exiting to trigger fresh setup on restart."
 		rm -f "$INFLUXDB_META_FILE" "$INFLUXDB_SETUP_STATE_FILE"
-		# Fall through to fresh setup — do not write stale tokens to output file.
+		exit 1
 	elif [[ "$_token_http" != "200" ]]; then
 		log "ERROR: Token validation returned unexpected HTTP $_token_http —" \
 			" InfluxDB may be temporarily unavailable. Retaining state; aborting."
