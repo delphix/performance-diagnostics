@@ -208,8 +208,12 @@ if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
 	# are gone — clear stale state and fall through to re-initialization.
 	# Transient errors (5xx, curl transport failure "000") leave state intact
 	# and abort so the next service restart retries rather than wiping valid data.
-	_token_http=$(curl -s -o /dev/null -w '%{http_code}' \
-		-H "Authorization: Token ${ADMIN_TOKEN:-}" \
+	if [[ -z "$ADMIN_TOKEN" ]]; then
+		log "ERROR: ADMIN_TOKEN not found in $INFLUXDB_META_FILE — cannot validate. Retaining state; aborting."
+		exit 1
+	fi
+	_token_http=$(curl -s --max-time 10 --connect-timeout 5 -o /dev/null -w '%{http_code}' \
+		-H "Authorization: Token $ADMIN_TOKEN" \
 		"$INFLUXDB_URL/api/v2/authorizations") || true
 	if [[ "$_token_http" == "401" || "$_token_http" == "403" ]]; then
 		log "WARNING: Stored ADMIN_TOKEN rejected by InfluxDB (HTTP $_token_http)." \
@@ -278,8 +282,12 @@ if [[ -f "$INFLUXDB_META_FILE" ]]; then
 		log "ERROR: Could not read required tokens from $INFLUXDB_META_FILE."
 		exit 1
 	fi
-	_token_http=$(curl -s -o /dev/null -w '%{http_code}' \
-		-H "Authorization: Token ${ADMIN_TOKEN:-}" \
+	if [[ -z "$ADMIN_TOKEN" ]]; then
+		log "ERROR: ADMIN_TOKEN not found in $INFLUXDB_META_FILE — cannot validate. Retaining state; aborting."
+		exit 1
+	fi
+	_token_http=$(curl -s --max-time 10 --connect-timeout 5 -o /dev/null -w '%{http_code}' \
+		-H "Authorization: Token $ADMIN_TOKEN" \
 		"$INFLUXDB_URL/api/v2/authorizations") || true
 	if [[ "$_token_http" == "401" || "$_token_http" == "403" ]]; then
 		log "WARNING: Stored tokens rejected by InfluxDB (HTTP $_token_http)." \
