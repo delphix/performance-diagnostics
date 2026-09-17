@@ -204,16 +204,22 @@ if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
 	done <"$INFLUXDB_META_FILE"
 
 	# Validate the stored admin token against the live InfluxDB instance.
-	# A non-200 response means the bolt file was reset and all tokens are gone;
-	# clear stale state and fall through to full re-initialization below.
+	# Only a 401/403 (auth rejection) proves the bolt was reset and all tokens
+	# are gone — clear stale state and fall through to re-initialization.
+	# Transient errors (5xx, curl transport failure "000") leave state intact
+	# and abort so the next service restart retries rather than wiping valid data.
 	_token_http=$(curl -s -o /dev/null -w '%{http_code}' \
 		-H "Authorization: Token ${ADMIN_TOKEN:-}" \
 		"$INFLUXDB_URL/api/v2/authorizations")
-	if [[ "$_token_http" != "200" ]]; then
+	if [[ "$_token_http" == "401" || "$_token_http" == "403" ]]; then
 		log "WARNING: Stored ADMIN_TOKEN rejected by InfluxDB (HTTP $_token_http)." \
 			" Auth store was likely reset. Clearing stale state and re-initializing."
 		rm -f "$INFLUXDB_META_FILE" "$INFLUXDB_SETUP_STATE_FILE" "$INFLUXDB_OUTPUT"
 		# Fall through to re-initialization — do not exit here.
+	elif [[ "$_token_http" != "200" ]]; then
+		log "ERROR: Token validation returned unexpected HTTP $_token_http —" \
+			" InfluxDB may be temporarily unavailable. Retaining state; aborting."
+		exit 1
 	else
 		if [[ -n "$ADMIN_TOKEN" && -n "$BUCKET_ID" && -n "$SUPPORT_BUCKET_ID" ]]; then
 			for _pair in \
@@ -275,11 +281,15 @@ if [[ -f "$INFLUXDB_META_FILE" ]]; then
 	_token_http=$(curl -s -o /dev/null -w '%{http_code}' \
 		-H "Authorization: Token ${ADMIN_TOKEN:-}" \
 		"$INFLUXDB_URL/api/v2/authorizations")
-	if [[ "$_token_http" != "200" ]]; then
-		log "WARNING: Stored tokens are no longer valid (HTTP $_token_http)." \
-			" InfluxDB auth store was reset. Clearing stale state and re-initializing."
+	if [[ "$_token_http" == "401" || "$_token_http" == "403" ]]; then
+		log "WARNING: Stored tokens rejected by InfluxDB (HTTP $_token_http)." \
+			" Auth store was likely reset. Clearing stale state and re-initializing."
 		rm -f "$INFLUXDB_META_FILE" "$INFLUXDB_SETUP_STATE_FILE"
 		# Fall through to fresh setup — do not write stale tokens to output file.
+	elif [[ "$_token_http" != "200" ]]; then
+		log "ERROR: Token validation returned unexpected HTTP $_token_http —" \
+			" InfluxDB may be temporarily unavailable. Retaining state; aborting."
+		exit 1
 	else
 		write_telegraf_output "$WRITE_TOKEN" "$SUPPORT_WRITE_TOKEN"
 		touch "$INFLUXDB_FLAG"
