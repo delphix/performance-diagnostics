@@ -17,6 +17,7 @@ INFLUXDB_PID=$!
 if ! $INFLUXDB_INIT; then
 	echo "ERROR: delphix-influxdb-init failed, stopping influxd" >&2
 	kill "$INFLUXDB_PID" 2>/dev/null
+	wait "$INFLUXDB_PID" 2>/dev/null
 	exit 1
 fi
 

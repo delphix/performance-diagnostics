@@ -3,6 +3,7 @@ Description=Delphix Telegraf Metric Collection Agent
 Documentation=https://github.com/influxdata/telegraf
 PartOf=delphix.target
 After=delphix-platform.service
+After=zfs-object-agent.service
 PartOf=delphix-platform.service
 
 [Service]
