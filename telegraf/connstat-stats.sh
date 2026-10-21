@@ -18,11 +18,12 @@
 #
 # mawk (the default awk on Delphix engines) does not flush its stdout buffer
 # when writing to a Telegraf execd pipe, even with explicit fflush() calls.
-# stdbuf -oL forces line-buffered stdout on awk, so each output line is
-# delivered to Telegraf immediately without needing awk to exit.
+# stdbuf -oL has no effect on mawk because mawk manages its own output buffers
+# and bypasses libc stdio — stdbuf's LD_PRELOAD trick cannot intercept it.
+# -W interactive is mawk's native flag for per-line flushing.
 /usr/bin/connstat -PLe -i 10 -T u \
     -o laddr,lport,raddr,rport,inbytes,outbytes,retranssegs,suna,unsent,swnd,cwnd,rwnd,rtt \
-    | stdbuf -oL awk -F',' '
+    | mawk -W interactive -F',' '
 BEGIN {
     batch_ts = 0
     # Load port->service mapping from /etc/services, same as LocalTCPStatsCollector.
