@@ -16,14 +16,14 @@
 #   swnd, cwnd, rwnd, rtt                          (averaged across connections)
 #   connections                                    (count of aggregated conns)
 #
-# mawk (the default awk on Delphix engines) does not flush its stdout buffer
-# when writing to a Telegraf execd pipe, even with explicit fflush() calls.
-# stdbuf -oL has no effect on mawk because mawk manages its own output buffers
-# and bypasses libc stdio — stdbuf's LD_PRELOAD trick cannot intercept it.
-# -W interactive is mawk's native flag for per-line flushing.
+# mawk (the default awk on Delphix engines) reads a pipe in blocks: it keeps
+# reading until its 256 KB input buffer is full, or EOF, before processing any
+# record. connstat never exits and writes a few KB per interval, so plain mawk
+# prints nothing; stdbuf -oL and fflush() affect only output and don't help.
+# -W interactive makes mawk read stdin line by line (and unbuffers stdout).
 /usr/bin/connstat -PLe -i 10 -T u \
     -o laddr,lport,raddr,rport,inbytes,outbytes,retranssegs,suna,unsent,swnd,cwnd,rwnd,rtt \
-    | mawk -W interactive -F',' '
+    | /usr/bin/mawk -W interactive -F',' '
 BEGIN {
     batch_ts = 0
     # Load port->service mapping from /etc/services, same as LocalTCPStatsCollector.
@@ -54,7 +54,6 @@ BEGIN {
               inb[key] "," outb[key] "," ret[key] "," sun[key] "," uns[key] "," \
               int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n "," batch_ts
     }
-    fflush()
     ts = $0; sub(/^=[[:space:]]*/, "", ts); batch_ts = ts + 0
     delete cnt; delete inb; delete outb; delete ret
     delete sun; delete uns; delete sw; delete cw; delete rw; delete rt
@@ -82,6 +81,5 @@ END {
               inb[key] "," outb[key] "," ret[key] "," sun[key] "," uns[key] "," \
               int(sw[key]/n) "," int(cw[key]/n) "," int(rw[key]/n) "," int(rt[key]/n) "," n "," batch_ts
     }
-    fflush()
 }
 '
