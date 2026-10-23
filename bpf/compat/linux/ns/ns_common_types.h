@@ -3,9 +3,10 @@
 #define _LINUX_NS_COMMON_TYPES_H
 
 /*
- * BCC/Clang compat header, force-included before the ZFS SPL preamble in
- * estat.py.  Fixes three compilation errors that arise when BCC compiles
- * BPF programs with the ZFS preamble on kernel 7.0+.
+ * BCC/Clang compat header, force-included ahead of every other cflag by
+ * the stbtrace probes, via lib/bcc_compat.py, and by cmd/estat.py for the
+ * programs that need the ZFS preamble.  Fixes three compilation errors
+ * that arise when BCC compiles BPF programs against kernel 7.0+ headers.
  */
 
 /* fs.h contains a static_assert that fails under BCC/Clang due to a
