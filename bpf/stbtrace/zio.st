@@ -19,6 +19,7 @@ if not os.path.exists(base_dir + "lib/bcchelper.py"):
     base_dir = "/usr/share/performance-diagnostics/"
 sys.path.append(base_dir + 'lib/')
 from bcchelper import BCCHelper   # noqa: E402
+from bcc_compat import compat_cflags   # noqa: E402
 
 # BPF txg program
 bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
@@ -126,11 +127,13 @@ int vdev_queue_done(struct pt_regs *ctx, zio_t *zio)
 """  # noqa: W293
 
 KVER = os.popen('uname -r').read().rstrip()
-b = BPF(text=bpf_text, cflags=["-include",
-                               "/usr/src/zfs-" + KVER + "/zfs_config.h",
-                               "-I/usr/src/zfs-" + KVER + "/include/",
-                               "-I/usr/src/zfs-" + KVER + "/include/spl/",
-                               "-I/usr/src/zfs-" + KVER + "/include/linux"])
+b = BPF(text=bpf_text,
+        cflags=compat_cflags + [
+            "-include",
+            "/usr/src/zfs-" + KVER + "/zfs_config.h",
+            "-I/usr/src/zfs-" + KVER + "/include/",
+            "-I/usr/src/zfs-" + KVER + "/include/spl/",
+            "-I/usr/src/zfs-" + KVER + "/include/linux"])
 
 b.attach_kretprobe(event="vdev_queue_io_to_issue",
                    fn_name="vdev_queue_issue_return")

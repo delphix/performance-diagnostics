@@ -19,6 +19,7 @@ if not os.path.exists(base_dir + "lib/bcchelper.py"):
     base_dir = "/usr/share/performance-diagnostics/"
 sys.path.append(base_dir + 'lib/')
 from bcchelper import BCCHelper   # noqa: E402
+from bcc_compat import compat_cflags   # noqa: E402
 
 
 # BPF disk io program
@@ -128,7 +129,7 @@ int disk_io_done(struct bpf_raw_tracepoint_args *ctx)
     return 0;
 }
 """  # noqa: W293
-b = BPF(text=bpf_text)
+b = BPF(text=bpf_text, cflags=compat_cflags)
 
 b.attach_raw_tracepoint("block_io_start", fn_name="disk_io_start")
 b.attach_raw_tracepoint("block_io_done", fn_name="disk_io_done")
