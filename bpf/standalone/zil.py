@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright 2019 Delphix. All rights reserved.
+# Copyright 2019, 2026 Delphix. All rights reserved.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
@@ -30,6 +30,7 @@ if not os.path.exists(base_dir + "lib/bcchelper.py"):
     base_dir = "/usr/share/performance-diagnostics/"
 sys.path.append(base_dir + 'lib/')
 from bcchelper import BCCHelper   # noqa: E402
+from bcc_compat import compat_cflags   # noqa: E402
 
 # define BPF program
 bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
@@ -302,13 +303,14 @@ int zil_commit_writer_stall_entry(struct pt_regs *cts)
 # load BPF program
 KVER = os.popen('uname -r').read().rstrip()
 b = BPF(text=bpf_text,
-        cflags=["-include",
-                "/usr/src/zfs-" + KVER + "/zfs_config.h",
-                "-include",
-                "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
-                "-I/usr/src/zfs-" + KVER + "/include/",
-                "-I/usr/src/zfs-" + KVER + "/include/spl",
-                "-D__KERNEL__", "-D_KERNEL"])
+        cflags=compat_cflags + [
+            "-include",
+            "/usr/src/zfs-" + KVER + "/zfs_config.h",
+            "-include",
+            "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
+            "-I/usr/src/zfs-" + KVER + "/include/",
+            "-I/usr/src/zfs-" + KVER + "/include/spl",
+            "-D__KERNEL__", "-D_KERNEL"])
 
 b.attach_kprobe(event="zfs_write", fn_name="zfs_write_entry")
 b.attach_kretprobe(event="zfs_write", fn_name="zfs_write_return")

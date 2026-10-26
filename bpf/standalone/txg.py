@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright 2019 Delphix. All rights reserved.
+# Copyright 2019, 2026 Delphix. All rights reserved.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
@@ -15,8 +15,15 @@
 from bcc import BPF, PerfType, PerfSWConfig
 import argparse
 import os
+import sys
 import drgn
 from datetime import datetime
+base_dir = os.path.dirname(__file__) + "/../../"
+if not os.path.exists(base_dir + "lib/bcchelper.py"):
+    base_dir = "/usr/share/performance-diagnostics/"
+sys.path.append(base_dir + 'lib/')
+# flake8 wants these at the top of the file, but path update must come first
+from bcc_compat import compat_cflags   # noqa: E402
 
 # define BPF program
 bpf_text = """
@@ -343,13 +350,14 @@ def print_event(cpu, data, size):
 # load BPF program
 KVER = os.popen('uname -r').read().rstrip()
 b = BPF(text=bpf_text,
-        cflags=["-include",
-                "/usr/src/zfs-" + KVER + "/zfs_config.h",
-                "-I/usr/src/zfs-" + KVER + "/include/",
-                "-I/usr/src/zfs-" + KVER + "/include/spl",
-                "-I/usr/src/zfs-" + KVER + "/include/",
-                "-I/usr/src/zfs-" + KVER + "/include/linux",
-                "-D__KERNEL__", "-D_KERNEL"])
+        cflags=compat_cflags + [
+            "-include",
+            "/usr/src/zfs-" + KVER + "/zfs_config.h",
+            "-I/usr/src/zfs-" + KVER + "/include/",
+            "-I/usr/src/zfs-" + KVER + "/include/spl",
+            "-I/usr/src/zfs-" + KVER + "/include/",
+            "-I/usr/src/zfs-" + KVER + "/include/linux",
+            "-D__KERNEL__", "-D_KERNEL"])
 
 b.attach_kprobe(event="spa_sync", fn_name="spa_sync_entry")
 b.attach_kretprobe(event="spa_sync", fn_name="spa_sync_return")
