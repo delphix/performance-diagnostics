@@ -19,6 +19,7 @@ if not os.path.exists(base_dir + "lib/bcchelper.py"):
     base_dir = "/usr/share/performance-diagnostics/"
 sys.path.append(base_dir + 'lib/')
 from bcchelper import BCCHelper   # noqa: E402
+from bcc_compat import compat_cflags   # noqa: E402
 
 # BPF txg program
 bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
@@ -139,7 +140,7 @@ int iscsi_target_end(struct pt_regs *ctx)
         return (0);
 }
 """  # noqa: W293
-b = BPF(text=bpf_text)
+b = BPF(text=bpf_text, cflags=compat_cflags)
 
 b.attach_kprobe(event="iscsit_process_scsi_cmd", fn_name="iscsi_target_start")
 b.attach_kprobe(event="iscsit_response_queue", fn_name="iscsi_target_response")

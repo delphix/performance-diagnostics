@@ -19,6 +19,7 @@ if not os.path.exists(base_dir + "lib/bcchelper.py"):
     base_dir = "/usr/share/performance-diagnostics/"
 sys.path.append(base_dir + 'lib/')
 from bcchelper import BCCHelper   # noqa: E402
+from bcc_compat import compat_cflags   # noqa: E402
 
 
 # BPF txg program
@@ -174,12 +175,13 @@ int zfs_write_done(struct pt_regs *ctx)
 
 KVER = os.popen('uname -r').read().rstrip()
 b = BPF(text=bpf_text,
-        cflags=["-include",
-                "/usr/src/zfs-" + KVER + "/zfs_config.h",
-                "-include",
-                "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
-                "-I/usr/src/zfs-" + KVER + "/include/",
-                "-I/usr/src/zfs-" + KVER + "/include/spl/"])
+        cflags=compat_cflags + [
+            "-include",
+            "/usr/src/zfs-" + KVER + "/zfs_config.h",
+            "-include",
+            "/usr/src/zfs-" + KVER + "/include/spl/sys/types.h",
+            "-I/usr/src/zfs-" + KVER + "/include/",
+            "-I/usr/src/zfs-" + KVER + "/include/spl/"])
 
 b.attach_kprobe(event="zfs_read", fn_name="zfs_read_start")
 b.attach_kprobe(event="zfs_write", fn_name="zfs_write_start")
