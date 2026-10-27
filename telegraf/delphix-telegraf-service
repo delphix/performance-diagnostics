@@ -5,8 +5,10 @@ DCT_INPUTS=/etc/telegraf/telegraf.inputs.dct
 PLAYBOOK_INPUTS=/etc/telegraf/telegraf.inputs.playbook
 STORAGE_IO_INPUTS=/etc/telegraf/telegraf.inputs.storage_io
 INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
+FLUENTD_OUTPUT=/etc/telegraf/telegraf.outputs.fluentd
 PLAYBOOK_FLAG=/etc/telegraf/PLAYBOOK_ENABLED
 INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
+FLUENTD_FLAG=/etc/telegraf/FLUENTD_ENABLED
 TELEGRAF_CONFIG=/etc/telegraf/telegraf.conf
 TELEGRAF_CONFIG_DIR=/etc/telegraf/telegraf.d
 
@@ -27,6 +29,10 @@ function playbook_is_enabled() {
 
 function influxdb_is_enabled() {
 	[[ -f $INFLUXDB_FLAG ]]
+}
+
+function fluentd_is_enabled() {
+	[[ -f $FLUENTD_FLAG ]]
 }
 
 rm -f $TELEGRAF_CONFIG
@@ -51,16 +57,33 @@ else
 	fi
 fi
 
-if influxdb_is_enabled && [[ -f $INFLUXDB_OUTPUT ]]; then
+has_output=false
+
+# Include storage I/O inputs (estat_nfs, estat_iscsi, estat_backend-io) whenever
+# any active output consumes those measurements — either InfluxDB or fluentd.
+if { influxdb_is_enabled && [[ -f $INFLUXDB_OUTPUT ]]; } ||
+   { fluentd_is_enabled && [[ -f $FLUENTD_OUTPUT ]]; }; then
 	if [[ -f $STORAGE_IO_INPUTS ]]; then
 		cat $STORAGE_IO_INPUTS >> $TELEGRAF_CONFIG
 	fi
+fi
+
+if influxdb_is_enabled && [[ -f $INFLUXDB_OUTPUT ]]; then
 	cat $INFLUXDB_OUTPUT >> $TELEGRAF_CONFIG
+	has_output=true
 else
 	if influxdb_is_enabled; then
 		logger -t delphix-telegraf "WARNING: INFLUXDB_ENABLED is set but $INFLUXDB_OUTPUT is missing — metrics will be discarded. Run delphix-influxdb-init to restore InfluxDB output."
 	fi
-	# No InfluxDB output configured. Add discard so Telegraf can start —
+fi
+
+if fluentd_is_enabled && [[ -f $FLUENTD_OUTPUT ]]; then
+	cat $FLUENTD_OUTPUT >> $TELEGRAF_CONFIG
+	has_output=true
+fi
+
+if [[ "$has_output" != "true" ]]; then
+	# No output configured. Add discard so Telegraf can start —
 	# it requires at least one output plugin.
 	echo "[[outputs.discard]]" >> $TELEGRAF_CONFIG
 fi

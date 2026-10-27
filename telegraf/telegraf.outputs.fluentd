@@ -1,0 +1,13 @@
+# Telegraf HTTP output → local fluentd HTTP source.
+# Forwards performance analytics metrics to fluentd, which routes them to
+# third-party monitoring systems (Splunk, Datadog) via existing
+# <match delphix.metrics.**> rules in fluent.conf.stg.
+# Included by delphix-telegraf-service when FLUENTD_ENABLED flag exists.
+[[outputs.http]]
+  url = "http://localhost:9880/delphix.metrics.platform"
+  method = "POST"
+  data_format = "json"
+  flush_interval = "60s"
+  namepass = ["cpu", "diskio", "net", "zfs", "estat_nfs", "estat_iscsi"]
+  [outputs.http.headers]
+    Content-Type = "application/json"
