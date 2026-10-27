@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (c) 2020, 2016 by Delphix. All rights reserved.
+# Copyright (c) 2016, 2026 by Delphix. All rights reserved.
 #
 
 #
@@ -30,6 +30,7 @@ from bcchelper import BCCHelper            # noqa: E402
 from bcchelper import BCCMapIndex          # noqa: E402
 from bcchelper import BCCPerCPUIntArray    # noqa: E402
 from bcchelper import BCCPoolCompare       # noqa: E402
+from bcc_compat import compat_cflags       # noqa: E402
 
 
 bpf_text = '#include "' + base_dir + 'lib/bcc_helper.h' + '"\n'
@@ -277,7 +278,7 @@ flags = ["-include",
          + ArcCountIndex.getCDefinitions() \
          + ArcLatencyIndex.getCDefinitions()
 
-b = BPF(text=bpf_text, cflags=flags)
+b = BPF(text=bpf_text, cflags=compat_cflags + flags)
 
 b.attach_kprobe(event="zfs_read", fn_name="zfs_read_entry")
 b.attach_kretprobe(event="zfs_read", fn_name="zfs_read_return")
