@@ -16,22 +16,40 @@ function die() {
 
 function usage() {
 	echo "$(basename $0): $*" >&2
-	echo "Usage: $(basename $0) [enable|disable]"
+	echo "Usage: $(basename $0) [enable|disable|status]"
 	exit 2
 }
 
 function enable_fluentd() {
 	date
+	if [[ -f $FLUENTD_FLAG ]]; then
+		echo "fluentd forwarding already enabled — nothing to do"
+		return 0
+	fi
 	echo "Enabling fluentd 3rd-party metric forwarding"
-	touch $FLUENTD_FLAG
+	touch $FLUENTD_FLAG || die "Failed to create $FLUENTD_FLAG"
 	systemctl restart delphix-telegraf || die "Failed to restart delphix-telegraf"
 }
 
 function disable_fluentd() {
 	date
+	if [[ ! -f $FLUENTD_FLAG ]]; then
+		echo "fluentd forwarding already disabled — nothing to do"
+		return 0
+	fi
 	echo "Disabling fluentd 3rd-party metric forwarding"
 	rm -f $FLUENTD_FLAG
 	systemctl restart delphix-telegraf || die "Failed to restart delphix-telegraf"
+}
+
+function status_fluentd() {
+	if [[ -f $FLUENTD_FLAG ]]; then
+		echo "fluentd forwarding: enabled"
+	else
+		echo "fluentd forwarding: disabled"
+	fi
+	echo -n "delphix-telegraf: "
+	systemctl is-active delphix-telegraf
 }
 
 if [[ $# -ne 1 ]]; then
@@ -39,7 +57,8 @@ if [[ $# -ne 1 ]]; then
 fi
 
 case "$1" in
-enable) enable_fluentd ;;
+enable)  enable_fluentd ;;
 disable) disable_fluentd ;;
+status)  status_fluentd ;;
 *) usage ;;
 esac

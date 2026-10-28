@@ -1,84 +1,157 @@
-# Starlark processor — maps Telegraf measurements to Java InsightLogger metric names
-# for backward-compatible fluentd output.
+# Starlark processor — maps Telegraf measurements to Java InsightLogger metric
+# names (system.*) with semantics matching Java's pushInsightMetric:
 #
-# splunkmetric_hec_routing forms metric_name as "measurement.field". To produce
-# e.g. "system.cpu.util.pct", measurement = "system.cpu.util" and field = "pct".
+#   system.cpu.util.pct    — % CPU busy in the window (gauge: last sample / 60s)
+#   system.net.total.bytes  — DELTA bytes (recv+sent) over the window, all ifaces
+#   system.disk.ops.count   — DELTA ops (read+write) over the window, all devices
+#   system.nfs.ops.count    — ops (read+write) over the window across directions
+#   system.iscsi.ops.count  — ops (read+write) over the window across directions
+#   system.tcp.total.bytes  — DELTA bytes (in+out) over the window, all endpoints
 #
-# Net, disk, tcp require cross-device/interface aggregation. Telegraf's built-in
-# `state` dict is used for mutable persistence across apply() calls (module-level
-# dicts are frozen by Starlark and cannot be mutated). Each metric type stores
-# its current-batch timestamp and running total in flat state keys, emitting the
-# previous batch's total when a new timestamp is seen.
+# Java polled /proc/net/dev, /proc/diskstats, etc. at ~60s cadence and sent
+# (current_cumulative - previous_cumulative). This processor does the same:
+#   - net / diskio / tcp_stats fields are cumulative kernel counters;
+#     we subtract the previous poll's value per-tag to recover the per-sample
+#     delta, then roll up per-sample deltas into a 60s bucket.
+#   - estat_nfs/_iscsi expose iops(/s), a rate averaged over the 10s collection
+#     window; ops-in-window = iops * 10, summed into the 60s bucket.
+#   - cpu usage_idle is already a percentage over the sample window — we keep
+#     the last sample's value in the 60s bucket (Java's gauge semantics).
+#
+# All bucketing happens here (no aggregator plugin) because Telegraf's
+# basicstats aggregator appends "_sum" to field names, which would corrupt the
+# splunkmetric-derived metric_name. Bucket emission is one 60s cycle behind
+# (previous bucket emitted when the first sample of the next bucket arrives).
+#
+# systemUniqueId / systemVersion are scoped to the compat metrics only (set
+# here, not as global_tags) so InfluxDB cardinality is unaffected.
+# ${DELPHIX_SYSTEM_UUID} / ${DELPHIX_SYSTEM_VERSION} are substituted at TOML
+# parse time from env vars exported by delphix-telegraf-service.
 #
 # Included by delphix-telegraf-service when FLUENTD_ENABLED flag exists.
 [[processors.starlark]]
   namepass = ["cpu", "diskio", "net", "estat_nfs", "estat_iscsi", "tcp_stats"]
   source = '''
-def accum(ts_key, val_key, out_measurement, out_field, ts, value):
-    # Round to 10s bucket so all devices/interfaces in one collection
-    # run share the same key regardless of sub-second timing differences.
-    bucket_ts = ts - (ts % 10)
-    result = []
-    if ts_key not in state:
-        state[ts_key] = bucket_ts
-        state[val_key] = float(value)
-    elif bucket_ts == state[ts_key]:
-        state[val_key] = state[val_key] + float(value)
-    else:
-        m = Metric(out_measurement)
-        m.time = state[ts_key]
-        m.fields[out_field] = state[val_key]
-        result.append(m)
-        state[ts_key] = bucket_ts
-        state[val_key] = float(value)
-    return result
+UUID      = "${DELPHIX_SYSTEM_UUID}"
+VERSION   = "${DELPHIX_SYSTEM_VERSION}"
+BUCKET_NS = 60 * 1000 * 1000 * 1000
+
+def tag_identity(m):
+    m.tags["systemUniqueId"] = UUID
+    m.tags["systemVersion"]  = VERSION
+    return m
+
+def cumulative_delta(key, current):
+    # Delta since the previous call for this key, or 0 on the first call
+    # (no previous baseline). Guards against counter wrap / device reset.
+    prev = state.get(key, None)
+    state[key] = current
+    if prev == None:
+        return 0
+    d = current - prev
+    if d < 0:
+        return 0
+    return d
+
+def flush_counter(prefix, measurement, field, bucket):
+    # If we have crossed a 60s bucket boundary, emit the previous bucket's
+    # accumulated sum and reset the accumulator for the new bucket. Returns a
+    # list (possibly empty) of metrics to emit.
+    bk = prefix + "_bucket"
+    ak = prefix + "_acc"
+    prev_bucket = state.get(bk, None)
+    out = []
+    if prev_bucket != None and prev_bucket != bucket:
+        acc = state.get(ak, 0.0)
+        m = Metric(measurement)
+        m.time = prev_bucket * BUCKET_NS
+        m.fields[field] = acc
+        out.append(tag_identity(m))
+        state[ak] = 0.0
+    state[bk] = bucket
+    return out
+
+def flush_gauge(prefix, measurement, field, bucket):
+    # Gauge version: emit the previous bucket's last-seen value when the
+    # bucket boundary is crossed. "last" is updated after this call.
+    bk = prefix + "_bucket"
+    lk = prefix + "_last"
+    prev_bucket = state.get(bk, None)
+    out = []
+    if prev_bucket != None and prev_bucket != bucket and lk in state:
+        m = Metric(measurement)
+        m.time = prev_bucket * BUCKET_NS
+        m.fields[field] = state[lk]
+        out.append(tag_identity(m))
+    state[bk] = bucket
+    return out
 
 def apply(metric):
-    name = metric.name
-    ts   = metric.time
+    name   = metric.name
+    ts     = metric.time
+    bucket = ts // BUCKET_NS
 
-    # system.cpu.util.pct = 100 - usage_idle  (cpu-total only)
+    # system.cpu.util.pct — gauge; keep last cpu-total sample per minute.
     if name == "cpu":
-        if metric.tags.get("cpu") == "cpu-total":
-            idle = float(metric.fields.get("usage_idle", 0))
-            m = Metric("system.cpu.util")
-            m.time = ts
-            m.fields["pct"] = 100.0 - idle
-            return [metric, m]
-        return [metric]
+        if metric.tags.get("cpu") != "cpu-total":
+            return [metric]
+        if "usage_idle" not in metric.fields:
+            return [metric]
+        out = [metric]
+        out = out + flush_gauge("cpu", "system.cpu.util", "pct", bucket)
+        state["cpu_last"] = 100.0 - float(metric.fields["usage_idle"])
+        return out
 
-    # system.nfs.ops.count = read_ops + write_ops
+    # system.nfs.ops.count — sum ops across read/write rows and 10s windows.
     if name == "estat_nfs":
-        r = int(metric.fields.get("read_ops",  0))
-        w = int(metric.fields.get("write_ops", 0))
-        m = Metric("system.nfs.ops")
-        m.time = ts
-        m.fields["count"] = float(r + w)
-        return [metric, m]
+        if "iops(/s)" not in metric.fields:
+            return [metric]
+        out = [metric]
+        out = out + flush_counter("nfs", "system.nfs.ops", "count", bucket)
+        state["nfs_acc"] = state.get("nfs_acc", 0.0) + float(metric.fields["iops(/s)"]) * 10.0
+        return out
 
-    # system.iscsi.ops.count = read_ops + write_ops
+    # system.iscsi.ops.count — same shape as nfs.
     if name == "estat_iscsi":
-        r = int(metric.fields.get("read_ops",  0))
-        w = int(metric.fields.get("write_ops", 0))
-        m = Metric("system.iscsi.ops")
-        m.time = ts
-        m.fields["count"] = float(r + w)
-        return [metric, m]
+        if "iops(/s)" not in metric.fields:
+            return [metric]
+        out = [metric]
+        out = out + flush_counter("iscsi", "system.iscsi.ops", "count", bucket)
+        state["iscsi_acc"] = state.get("iscsi_acc", 0.0) + float(metric.fields["iops(/s)"]) * 10.0
+        return out
 
-    # system.net.total.bytes = sum(bytes_recv + bytes_sent) across all interfaces
+    # system.net.total.bytes — per-interface cumulative-counter delta, summed.
     if name == "net":
-        val = int(metric.fields.get("bytes_recv", 0)) + int(metric.fields.get("bytes_sent", 0))
-        return [metric] + accum("net_ts", "net_val", "system.net.total", "bytes", ts, val)
+        iface = metric.tags.get("interface", "")
+        recv = int(metric.fields.get("bytes_recv", 0))
+        sent = int(metric.fields.get("bytes_sent", 0))
+        d = cumulative_delta("net_r_" + iface, recv) + cumulative_delta("net_s_" + iface, sent)
+        out = [metric]
+        out = out + flush_counter("net", "system.net.total", "bytes", bucket)
+        state["net_acc"] = state.get("net_acc", 0.0) + float(d)
+        return out
 
-    # system.disk.ops.count = sum(reads + writes) across all devices
+    # system.disk.ops.count — per-device cumulative-counter delta, summed.
     if name == "diskio":
-        val = int(metric.fields.get("reads", 0)) + int(metric.fields.get("writes", 0))
-        return [metric] + accum("disk_ts", "disk_val", "system.disk.ops", "count", ts, val)
+        dev = metric.tags.get("name", "")
+        r = int(metric.fields.get("reads",  0))
+        w = int(metric.fields.get("writes", 0))
+        d = cumulative_delta("disk_r_" + dev, r) + cumulative_delta("disk_w_" + dev, w)
+        out = [metric]
+        out = out + flush_counter("disk", "system.disk.ops", "count", bucket)
+        state["disk_acc"] = state.get("disk_acc", 0.0) + float(d)
+        return out
 
-    # system.tcp.total.bytes = sum(inbytes + outbytes) across all TCP endpoints
+    # system.tcp.total.bytes — per-endpoint cumulative-counter delta, summed.
     if name == "tcp_stats":
-        val = int(metric.fields.get("inbytes", 0)) + int(metric.fields.get("outbytes", 0))
-        return [metric] + accum("tcp_ts", "tcp_val", "system.tcp.total", "bytes", ts, val)
+        key = metric.tags.get("laddr", "") + "|" + metric.tags.get("raddr", "") + "|" + metric.tags.get("service", "")
+        inb  = int(metric.fields.get("inbytes",  0))
+        outb = int(metric.fields.get("outbytes", 0))
+        d = cumulative_delta("tcp_in_" + key, inb) + cumulative_delta("tcp_out_" + key, outb)
+        out = [metric]
+        out = out + flush_counter("tcp", "system.tcp.total", "bytes", bucket)
+        state["tcp_acc"] = state.get("tcp_acc", 0.0) + float(d)
+        return out
 
     return [metric]
 '''
