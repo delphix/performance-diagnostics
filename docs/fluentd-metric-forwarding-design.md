@@ -4,6 +4,13 @@
 **Related design**: [Delphix Engine Performance Analytics in DCT](https://perforce.atlassian.net/wiki/spaces/DLXEN/pages/2740027450) ·
 **Discussion**: [Slack thread with Seb Roy](https://perforce.slack.com/archives/C09JVAKD3JM/p1793111848235599)
 
+**Reference PRs** (sample implementation for review alongside this doc):
+
+| PR | Repo | What it does |
+|---|---|---|
+| [#135](https://github.com/delphix/performance-diagnostics/pull/135) | `performance-diagnostics` | Telegraf HTTP output, Starlark transform (name mapping + delta rollup), engine identity injection, `perf_fluentd` CLI |
+| [#5043](https://github.com/delphix/dlpx-app-gate/pull/5043) | `dlpx-app-gate` | Removes the Java `pushInsightMetric` path, adds `<source @type http port 9880>` to `fluent.conf.stg`, wires `perf_fluentd enable/disable` into the Fluentd lifecycle (`FluentServiceImpl`) |
+
 ---
 
 ## 1 · Context — What We're Building
