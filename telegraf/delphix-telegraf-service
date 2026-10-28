@@ -6,12 +6,16 @@ PLAYBOOK_INPUTS=/etc/telegraf/telegraf.inputs.playbook
 STORAGE_IO_INPUTS=/etc/telegraf/telegraf.inputs.storage_io
 INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
 FLUENTD_OUTPUT=/etc/telegraf/telegraf.outputs.fluentd
+GLOBAL_TAGS=/etc/telegraf/telegraf.global_tags
 PLAYBOOK_FLAG=/etc/telegraf/PLAYBOOK_ENABLED
 INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
 FLUENTD_FLAG=/etc/telegraf/FLUENTD_ENABLED
 TELEGRAF_CONFIG=/etc/telegraf/telegraf.conf
 TELEGRAF_CONFIG_DIR=/etc/telegraf/telegraf.d
 
+
+export DELPHIX_SYSTEM_UUID=$(get-system-uuid 2>/dev/null || echo "unknown")
+export DELPHIX_SYSTEM_VERSION=$(get-appliance-version 2>/dev/null || echo "unknown")
 
 function engine_is_dct() {
 	/usr/bin/get-appliance-variant | grep -q "dct" >/dev/null
@@ -78,6 +82,9 @@ else
 fi
 
 if fluentd_is_enabled && [[ -f $FLUENTD_OUTPUT ]]; then
+	if [[ -f $GLOBAL_TAGS ]]; then
+		cat $GLOBAL_TAGS >> $TELEGRAF_CONFIG
+	fi
 	cat $FLUENTD_OUTPUT >> $TELEGRAF_CONFIG
 	has_output=true
 fi

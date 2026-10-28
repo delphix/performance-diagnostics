@@ -1,0 +1,6 @@
+# Engine identity tags injected when fluentd 3rd-party output is enabled.
+# DELPHIX_SYSTEM_UUID and DELPHIX_SYSTEM_VERSION are exported by
+# delphix-telegraf-service at startup from get-system-uuid / get-appliance-version.
+[global_tags]
+  systemUniqueId = "${DELPHIX_SYSTEM_UUID}"
+  systemVersion  = "${DELPHIX_SYSTEM_VERSION}"

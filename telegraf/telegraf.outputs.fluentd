@@ -6,8 +6,8 @@
 [[outputs.http]]
   url = "http://localhost:9880/delphix.metrics.platform"
   method = "POST"
-  data_format = "json"
-  json_transformation = "metrics"
+  data_format = "splunkmetric"
+  splunkmetric_hec_routing = true
   flush_interval = "60s"
   namepass = ["cpu", "diskio", "net", "zfs", "estat_nfs", "estat_iscsi"]
   [outputs.http.headers]
