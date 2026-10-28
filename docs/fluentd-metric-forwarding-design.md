@@ -107,114 +107,90 @@ Java's collection stack (`AnalyticsStorageImpl`, `LocalCpuCollector`, etc.) is b
 
 ## 3. High-Level Design (HLD)
 
-### 3.1 Architecture Overview
+### 3.1 What It Does in One Picture
 
 ```mermaid
-graph TB
-    subgraph Engine["Delphix Engine"]
-        subgraph Inputs["Metric Collection (Telegraf inputs)"]
-            CPU["inputs.cpu\n10s interval"]
-            NET["inputs.net\n10s interval"]
-            DISK["inputs.diskio\n60s interval"]
-            NFS["inputs.execd\n(estat nfs)\n10s interval"]
-            ISCSI["inputs.execd\n(estat iscsi)\n10s interval"]
-            TCP["inputs.execd\n(connstat)\n10s interval"]
-        end
+flowchart LR
+    Setup(["👤 Admin\nenables 3rd-party\nmonitoring\nin setup screen"])
 
-        subgraph Processing["Metric Transform (processors.starlark)"]
-            PROC["telegraf.processors.fluentd\n\n• Remap metric names to Java names\n• Compute deltas from cumulative counters\n• Roll up into 60s buckets\n• Inject engine identity tags\n\nOnly active when FLUENTD_ENABLED flag exists"]
-        end
-
-        subgraph Outputs["Outputs"]
-            INFLUX["outputs.influxdb_v2\n(all raw metrics at full resolution)"]
-            HTTP["outputs.http\n→ localhost:9880\n(only system.* compat metrics,\none per minute)"]
-        end
-
-        FLUENTD["FluentD\nHTTP source :9880\n\n<match delphix.metrics.**>"]
-        FLAG["/etc/telegraf/\nFLUENTD_ENABLED\n(flag file)"]
-        CLI["perf_fluentd\nenable | disable | status"]
+    subgraph DE["  Delphix Engine  "]
+        direction TB
+        Telegraf["📊 Telegraf\ncollects CPU, Network,\nDisk, NFS, iSCSI, TCP\nevery 10–60 seconds"]
+        Transform["🔄 Name Transform\nConverts to Java-compatible\nnames once per minute\neg. cpu → system.cpu.util.pct"]
+        Fluentd["📬 Fluentd\nroutes to customer\nmonitoring system"]
     end
 
-    subgraph Customer["Customer Monitoring"]
-        SPLUNK["Splunk\n(mstats / SPL)"]
-        DATADOG["Datadog"]
-        ELASTIC["Elasticsearch"]
-    end
+    Customer(["🖥️ Customer\nSplunk / Datadog\ndashboards"])
 
-    CPU & NET & DISK & NFS & ISCSI & TCP --> PROC
-    CPU & NET & DISK & NFS & ISCSI & TCP --> INFLUX
-    PROC --> HTTP
-    HTTP --> FLUENTD
-    FLAG -.controls.-> PROC
-    CLI -.manages.-> FLAG
-    FLUENTD --> SPLUNK & DATADOG & ELASTIC
+    Setup -->|"perf_fluentd enable\n(one-time setup)"| DE
+    Telegraf --> Transform
+    Transform -->|"HTTP POST\nlocalhost:9880\n1 event/min/metric"| Fluentd
+    Fluentd -->|"existing\ncustomer plugin"| Customer
+
+    style DE fill:#f0f4ff,stroke:#4466cc
+    style Transform fill:#fff8e0,stroke:#cc9900
 ```
 
-### 3.2 User Control Flow
+**In plain English:**
+1. Admin enables forwarding once in the Delphix setup screen.
+2. Telegraf (already running) collects engine health metrics every few seconds.
+3. A transform step (built into Telegraf) reshapes those metrics to match the exact format customers' Splunk/Datadog dashboards expect — one tidy event per metric per minute.
+4. Fluentd (already running) receives the events and routes them to the customer's monitoring system using their existing plugin config. Nothing changes on the customer side.
 
-The customer or Delphix admin enables/disables forwarding via the setup screen. The app-gate calls `perf_fluentd enable/disable`. Telegraf restarts and re-reads the flag on every restart.
+---
 
-```mermaid
-sequenceDiagram
-    actor Admin as Admin / Setup Screen
-    participant AppGate as dlpx-app-gate
-    participant CLI as perf_fluentd
-    participant Flag as /etc/telegraf/FLUENTD_ENABLED
-    participant Service as delphix-telegraf-service
-    participant Telegraf as telegraf (process)
+### 3.2 How the On/Off Switch Works
 
-    Admin->>AppGate: Save third-party credentials
-    AppGate->>CLI: perf_fluentd enable
-    CLI->>Flag: touch (create flag file)
-    CLI->>Service: systemctl restart delphix-telegraf
-    Service->>Service: Read flag → include processor + output
-    Service->>Telegraf: Start with fluentd stanza in telegraf.conf
-
-    Admin->>AppGate: Remove third-party credentials
-    AppGate->>CLI: perf_fluentd disable
-    CLI->>Flag: rm (remove flag file)
-    CLI->>Service: systemctl restart delphix-telegraf
-    Service->>Service: Flag absent → exclude processor + output
-    Service->>Telegraf: Start without fluentd stanza
-```
-
-### 3.3 telegraf.conf Assembly
-
-On every service start, `delphix-telegraf-service` generates `/etc/telegraf/telegraf.conf` by concatenating config fragments conditionally:
+The customer can turn forwarding on or off from the Delphix setup screen at any time.
 
 ```mermaid
 flowchart TD
-    Start([Service starts]) --> Base[cat telegraf.base → telegraf.conf]
-    Base --> StorIO{InfluxDB OR\nFluentD enabled?}
-    StorIO -->|Yes| SI[append telegraf.inputs.storage_io\nest_nfs, estat_iscsi, tcp_stats]
-    StorIO -->|No| InfluxQ
+    A(["Admin saves\n3rd-party credentials\nin Setup UI"]) --> B["app-gate calls\nperf_fluentd enable"]
+    B --> C["Creates a flag file\n/etc/telegraf/FLUENTD_ENABLED"]
+    C --> D["Restarts Telegraf service"]
+    D --> E["Telegraf reads flag\nand activates forwarding"]
+    E --> F(["✅ Metrics flowing\nto Splunk / Datadog"])
 
-    SI --> InfluxQ{INFLUXDB_ENABLED?}
-    InfluxQ -->|Yes + file exists| InfluxOut[append telegraf.outputs.influxdb]
-    InfluxQ -->|Yes + file missing| InfluxWarn[logger WARNING]
-    InfluxQ -->|No| FluentQ
+    G(["Admin removes\ncredentials"]) --> H["app-gate calls\nperf_fluentd disable"]
+    H --> I["Removes the flag file"]
+    I --> J["Restarts Telegraf service"]
+    J --> K(["⛔ Forwarding stopped\nInfluxDB unaffected"])
 
-    InfluxOut --> FluentQ
-    InfluxWarn --> FluentQ
+    style F fill:#ddffdd,stroke:#44aa44
+    style K fill:#ffdddd,stroke:#aa4444
+```
 
-    FluentQ{FLUENTD_ENABLED?}
-    FluentQ -->|Yes + output exists| ProcQ{FLUENTD_PROCESSOR\nexists?}
-    FluentQ -->|Yes + output missing| FluentWarn[logger WARNING]
-    FluentQ -->|No| HasOut
+**Key point:** The flag file is the single source of truth. If it exists → forwarding is on. If it doesn't → forwarding is off. Telegraf reads this on every restart and builds its config accordingly.
 
-    ProcQ -->|Yes| Proc["envsubst UUID/VERSION\nappend telegraf.processors.fluentd"]
-    ProcQ -->|No| ProcErr[logger ERROR\nraw names will be forwarded]
+---
 
-    Proc --> FluentOut[append telegraf.outputs.fluentd]
-    ProcErr --> FluentOut
-    FluentOut --> HasOut
+### 3.3 What Stays the Same for Customers
 
-    HasOut{has_output\n= true?}
-    HasOut -->|No| Discard[echo outputs.discard]
-    HasOut -->|Yes| Perms
+Customers do **not** change anything in their monitoring system. The event format, metric names, and Fluentd routing rules are preserved from the old Java implementation:
 
-    Discard --> Perms[chmod 640 telegraf.conf]
-    Perms --> Launch[exec telegraf -config telegraf.conf]
+```mermaid
+flowchart LR
+    subgraph Before["Before (Java path)"]
+        J["Java\npushInsightMetric()"] -->|"TCP 24224\nFluentd Forward"| F1["Fluentd"] --> S1["Splunk"]
+    end
+
+    subgraph After["After (Telegraf path) — this design"]
+        T["Telegraf\n+ transform"] -->|"HTTP 9880\nFluentd HTTP source"| F2["Fluentd"] --> S2["Splunk"]
+    end
+
+    subgraph Same["What stays the same ✅"]
+        direction TB
+        N1["metric_name: system.cpu.util.pct"]
+        N2["_value: 94.7"]
+        N3["systemUniqueId: engine UUID"]
+        N4["event: metric"]
+        N5["1 event per metric per minute"]
+        N6["Fluentd match rules unchanged"]
+    end
+
+    style Before fill:#fff0f0
+    style After fill:#f0fff0
+    style Same fill:#f0f8ff
 ```
 
 ---
