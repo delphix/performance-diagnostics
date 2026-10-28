@@ -6,78 +6,89 @@
 
 ## Problem
 
-When a DE is added to DCT, Java analytics is disabled to avoid duplication. This silently stops metric forwarding to customer Splunk / Datadog — they receive nothing.
+Delphix customers can forward engine health metrics (CPU, Disk, Network, NFS, iSCSI, TCP) to their own monitoring tools (Splunk, Datadog) through a service called **Fluentd** that already runs on every engine. Historically, Java code on the engine collected those metrics and pushed them to Fluentd.
+
+When a Delphix Engine (DE) is added to **DCT** (Data Control Tower), DCT becomes the central collector. To avoid sending the same data twice, Java's metric collection is intentionally turned off on that engine. **The side effect: the push to Fluentd stops too.** Those customers now see zero metrics in their Splunk / Datadog dashboards even though nothing else changed in their setup.
 
 ```
-DE + DCT today:  Java OFF → Fluentd → ❌ Splunk (no data)
-                 Telegraf ON → InfluxDB ✅ (but no Fluentd path)
+DE + DCT today:   Java OFF  → Fluentd → ❌ Splunk (no data)
+                  Telegraf ON → InfluxDB ✅  (local only, no path to Fluentd)
 ```
 
 ---
 
 ## Solution
 
-Add a Fluentd output path to Telegraf so DCT-managed engines resume forwarding metrics to customer monitoring systems with **no changes on the customer side**.
+Teach **Telegraf** (which is already running on DCT-managed engines) to send the same six metrics to Fluentd in the same shape Java used — so customers' existing Splunk / Datadog dashboards keep working with **no change on their side**.
 
 ---
 
-## Data Flow
+## How It Flows (end-to-end)
 
 ```mermaid
 flowchart LR
-    Admin(["Admin\nSetup Screen"]) -->|"enable/disable"| Toggle["FLUENTD_ENABLED\nflag file"]
-    Toggle -->|controls| T
+    Admin(["👤 Admin\nSetup Screen\n(enable 3rd-party monitoring)"])
 
     subgraph DE["Delphix Engine"]
-        T["Telegraf\ncollects metrics"] --> P["Transform\nrenames + rolls up\nto 1 event/min"] --> F["Fluentd\n:9880"]
+        direction TB
+        T["① Telegraf\ncollects raw metrics\nevery 10–60 sec"]
+        P["② Transform step\n• renames to Java-style names\n• rolls up to 1 event / minute\n• adds engine ID + version"]
+        F["③ Fluentd\nreceives on port 9880\nroutes to customer plugin"]
+        T --> P --> F
     end
 
-    F --> Customer(["Splunk / Datadog\n← unchanged"])
+    Customer(["🖥️ Customer monitoring\nSplunk / Datadog\n(dashboards unchanged)"])
+
+    Admin -->|"flips the switch\n(perf_fluentd enable)"| DE
+    F --> Customer
+
+    style DE fill:#f0f4ff,stroke:#4466cc
+    style P fill:#fff8e0,stroke:#cc9900
 ```
+
+**Step by step:**
+
+1. **Admin turns it on once** — in the Delphix setup screen, they save Splunk / Datadog credentials. Internally, this calls `perf_fluentd enable`, which creates a flag file and restarts Telegraf. From then on, the engine forwards automatically.
+
+2. **Telegraf collects** — Telegraf is already gathering CPU usage, network bytes, disk operations, etc. every 10–60 seconds. This step changes nothing; the data was already being collected and stored in InfluxDB.
+
+3. **Transform** — a Starlark script inside Telegraf picks six of those raw metrics, renames them to the exact names the customer's dashboards expect (`system.cpu.util.pct`, `system.net.total.bytes`, etc.), rolls them up to one event per minute, and tags each with the engine UUID and version. This is the "backward compatibility" layer that keeps the customer's dashboards working.
+
+4. **Send to Fluentd** — Telegraf POSTs those tidy events to Fluentd on localhost port 9880. Fluentd is already running on the engine and already has routing rules (`<match delphix.metrics.**>`) that forward anything on this channel to whichever third-party plugin the customer configured. **Those routing rules do not change.**
+
+5. **Customer's dashboards light up** — Splunk / Datadog receive events with the same metric names, same values, and same identifying fields they always did. The customer sees no difference.
 
 ---
 
-## What Customers Receive (unchanged from Java)
+## What Customers Receive (same as Java)
 
 | Field | Value |
 |---|---|
-| `metric_name` | `system.cpu.util.pct`, `system.net.total.bytes`, `system.disk.ops.count`, `system.nfs.ops.count`, `system.iscsi.ops.count`, `system.tcp.total.bytes` |
-| `_value` | Numeric value for that metric |
-| `systemUniqueId` | Engine UUID |
-| `systemVersion` | Engine version |
+| `metric_name` | one of: `system.cpu.util.pct` · `system.net.total.bytes` · `system.disk.ops.count` · `system.nfs.ops.count` · `system.iscsi.ops.count` · `system.tcp.total.bytes` |
+| `_value` | numeric value for that metric |
+| `systemUniqueId` | engine UUID (lets customers filter by engine in multi-engine setups) |
+| `systemVersion` | engine software version |
 | `event` | `"metric"` |
-| Frequency | 1 event per metric per minute |
-| Protocol | HTTP POST → Fluentd :9880 (was TCP :24224) |
+| **Frequency** | 1 event per metric per minute |
+| **Transport** | HTTP POST → Fluentd `:9880` (replaces old Fluentd Forward on `:24224`) |
 
 ---
 
-## What's New (3 files)
+## What's New in the Engine (3 files)
 
-| File | What it does |
+| File | Role |
 |---|---|
-| `perf_fluentd` | CLI: `enable` / `disable` / `status` |
-| `telegraf.outputs.fluentd` | HTTP output config (static) |
-| `telegraf.processors.fluentd` | Starlark: rename metrics + compute 60s deltas |
-
----
-
-## Open Questions — Need Answers Before GA
-
-| # | Question | Who | Risk |
-|---|---|---|---|
-| Q1 | Does `_time` in **seconds** (not ms like Java) break Splunk mstats? | Seb | High |
-| Q2 | Does the HEC nested structure `{"fields":{...}}` work with existing customer Fluentd plugins? | Seb | High |
-| Q3 | Does `systemVersion` as a full build string break any dashboard filter? | Seb | Medium |
-| Q4 | Is `system.tcp.total.bytes` from connstat semantically equivalent to Java's value? | Eng | Medium |
-| Q5 | Can we test NFS/iSCSI metrics on an engine with active traffic before GA? | Eng | Medium |
+| `perf_fluentd` | Command-line switch: `enable` / `disable` / `status` |
+| `telegraf.outputs.fluentd` | Tells Telegraf where to POST the events |
+| `telegraf.processors.fluentd` | The Starlark transform (renaming + rollup) |
 
 ---
 
 ## Recommendation
 
-| Segment | Today | Action |
+| Customer segment | Today | What to do |
 |---|---|---|
-| **DE + DCT** | ❌ Broken — no data in Splunk | Unblock: answer Q1 + Q2 this sprint, enable |
-| **DE standalone** | ✅ Java still working | Hold: keep Java, enable Telegraf path only after Q1–Q5 answered |
+| **DE + DCT** | ❌ Broken — zero data reaching Splunk | **Unblock first** — this fix resolves it |
+| **DE standalone** | ✅ Java still forwarding | Leave Java on until the Telegraf path is proven in the DCT segment |
 
-The feature is **off by default**. Existing customers are unaffected until explicitly enabled.
+The feature ships **off by default**. No existing customer is affected until the admin explicitly enables it from the setup screen.
