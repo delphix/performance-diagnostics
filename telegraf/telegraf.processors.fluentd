@@ -1,0 +1,84 @@
+# Starlark processor — maps Telegraf measurements to Java InsightLogger metric names
+# for backward-compatible fluentd output.
+#
+# splunkmetric_hec_routing forms metric_name as "measurement.field". To produce
+# e.g. "system.cpu.util.pct", measurement = "system.cpu.util" and field = "pct".
+#
+# Net, disk, tcp require cross-device/interface aggregation. Telegraf's built-in
+# `state` dict is used for mutable persistence across apply() calls (module-level
+# dicts are frozen by Starlark and cannot be mutated). Each metric type stores
+# its current-batch timestamp and running total in flat state keys, emitting the
+# previous batch's total when a new timestamp is seen.
+#
+# Included by delphix-telegraf-service when FLUENTD_ENABLED flag exists.
+[[processors.starlark]]
+  namepass = ["cpu", "diskio", "net", "estat_nfs", "estat_iscsi", "tcp_stats"]
+  source = '''
+def accum(ts_key, val_key, out_measurement, out_field, ts, value):
+    # Round to 10s bucket so all devices/interfaces in one collection
+    # run share the same key regardless of sub-second timing differences.
+    bucket_ts = ts - (ts % 10)
+    result = []
+    if ts_key not in state:
+        state[ts_key] = bucket_ts
+        state[val_key] = float(value)
+    elif bucket_ts == state[ts_key]:
+        state[val_key] = state[val_key] + float(value)
+    else:
+        m = Metric(out_measurement)
+        m.time = state[ts_key]
+        m.fields[out_field] = state[val_key]
+        result.append(m)
+        state[ts_key] = bucket_ts
+        state[val_key] = float(value)
+    return result
+
+def apply(metric):
+    name = metric.name
+    ts   = metric.time
+
+    # system.cpu.util.pct = 100 - usage_idle  (cpu-total only)
+    if name == "cpu":
+        if metric.tags.get("cpu") == "cpu-total":
+            idle = float(metric.fields.get("usage_idle", 0))
+            m = Metric("system.cpu.util")
+            m.time = ts
+            m.fields["pct"] = 100.0 - idle
+            return [metric, m]
+        return [metric]
+
+    # system.nfs.ops.count = read_ops + write_ops
+    if name == "estat_nfs":
+        r = int(metric.fields.get("read_ops",  0))
+        w = int(metric.fields.get("write_ops", 0))
+        m = Metric("system.nfs.ops")
+        m.time = ts
+        m.fields["count"] = float(r + w)
+        return [metric, m]
+
+    # system.iscsi.ops.count = read_ops + write_ops
+    if name == "estat_iscsi":
+        r = int(metric.fields.get("read_ops",  0))
+        w = int(metric.fields.get("write_ops", 0))
+        m = Metric("system.iscsi.ops")
+        m.time = ts
+        m.fields["count"] = float(r + w)
+        return [metric, m]
+
+    # system.net.total.bytes = sum(bytes_recv + bytes_sent) across all interfaces
+    if name == "net":
+        val = int(metric.fields.get("bytes_recv", 0)) + int(metric.fields.get("bytes_sent", 0))
+        return [metric] + accum("net_ts", "net_val", "system.net.total", "bytes", ts, val)
+
+    # system.disk.ops.count = sum(reads + writes) across all devices
+    if name == "diskio":
+        val = int(metric.fields.get("reads", 0)) + int(metric.fields.get("writes", 0))
+        return [metric] + accum("disk_ts", "disk_val", "system.disk.ops", "count", ts, val)
+
+    # system.tcp.total.bytes = sum(inbytes + outbytes) across all TCP endpoints
+    if name == "tcp_stats":
+        val = int(metric.fields.get("inbytes", 0)) + int(metric.fields.get("outbytes", 0))
+        return [metric] + accum("tcp_ts", "tcp_val", "system.tcp.total", "bytes", ts, val)
+
+    return [metric]
+'''

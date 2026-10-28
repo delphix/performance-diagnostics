@@ -6,6 +6,7 @@ PLAYBOOK_INPUTS=/etc/telegraf/telegraf.inputs.playbook
 STORAGE_IO_INPUTS=/etc/telegraf/telegraf.inputs.storage_io
 INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
 FLUENTD_OUTPUT=/etc/telegraf/telegraf.outputs.fluentd
+FLUENTD_PROCESSOR=/etc/telegraf/telegraf.processors.fluentd
 GLOBAL_TAGS=/etc/telegraf/telegraf.global_tags
 PLAYBOOK_FLAG=/etc/telegraf/PLAYBOOK_ENABLED
 INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
@@ -84,6 +85,9 @@ fi
 if fluentd_is_enabled && [[ -f $FLUENTD_OUTPUT ]]; then
 	if [[ -f $GLOBAL_TAGS ]]; then
 		cat $GLOBAL_TAGS >> $TELEGRAF_CONFIG
+	fi
+	if [[ -f $FLUENTD_PROCESSOR ]]; then
+		cat $FLUENTD_PROCESSOR >> $TELEGRAF_CONFIG
 	fi
 	cat $FLUENTD_OUTPUT >> $TELEGRAF_CONFIG
 	has_output=true

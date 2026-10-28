@@ -9,6 +9,7 @@
   data_format = "splunkmetric"
   splunkmetric_hec_routing = true
   flush_interval = "60s"
-  namepass = ["cpu", "diskio", "net", "zfs", "estat_nfs", "estat_iscsi"]
+  namepass = ["system.cpu.util", "system.net.total", "system.disk.ops",
+              "system.nfs.ops", "system.iscsi.ops", "system.tcp.total"]
   [outputs.http.headers]
     Content-Type = "application/json"
