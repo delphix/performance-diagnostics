@@ -11,6 +11,10 @@
 # Included by delphix-telegraf-service when FLUENTD_ENABLED flag exists.
 [[processors.starlark]]
   namepass = ["cpu", "diskio", "net", "estat_nfs", "estat_iscsi", "tcp_stats"]
+  # Run after the base-config storage_io processors (order 1-3): the name=total
+  # row filter must execute first, otherwise read + write + total rows all land
+  # in our accumulators and NFS/iSCSI ops counts come out doubled.
+  order = 4
   source = '''
 UUID      = "${DELPHIX_SYSTEM_UUID}"
 VERSION   = "${DELPHIX_SYSTEM_VERSION}"
@@ -225,31 +229,26 @@ def apply(metric):
         state["dsk_d_wt"] = state.get("dsk_d_wt", 0.0) + float(d_wt)
         return out
 
-    # system.tcp.total.bytes — data.* includes bytes + retransmits + windows + rtt.
+    # system.tcp.total.bytes — data.* carries true per-bucket deltas only.
+    # swnd/cwnd/rwnd/rtt/connections were dropped: they were last-write-wins
+    # across endpoints, so the emitted value reflected whichever connection
+    # happened to be processed last in the bucket rather than any meaningful
+    # aggregate. Per-endpoint window/rtt would require per-endpoint events,
+    # which is out of scope for the aggregated system.tcp.total.bytes metric.
     if name == "tcp_stats":
         key  = metric.tags.get("laddr", "") + "|" + metric.tags.get("raddr", "") + "|" + metric.tags.get("service", "")
         inb  = int(metric.fields.get("inbytes",  0))
         outb = int(metric.fields.get("outbytes", 0))
         rseg = int(metric.fields.get("retranssegs", 0))
-        swnd = int(metric.fields.get("swnd", 0))
-        cwnd = int(metric.fields.get("cwnd", 0))
-        rwnd = int(metric.fields.get("rwnd", 0))
-        rtt  = int(metric.fields.get("rtt",  0))
-        conn = int(metric.fields.get("connections", 0))
         d_in  = cumulative_delta("tcp_in_"  + key, inb)
         d_out = cumulative_delta("tcp_out_" + key, outb)
         d_rs  = cumulative_delta("tcp_rs_"  + key, rseg)
         out = [metric]
         out = out + flush_counter("tcp", "system.tcp.total", "bytes", bucket)
         if len(out) > 1:
-            out[1].tags["data.inBytes"]              = str(int(state.get("tcp_d_in",  0.0)))
-            out[1].tags["data.outBytes"]             = str(int(state.get("tcp_d_out", 0.0)))
-            out[1].tags["data.retransmittedSegs"]    = str(int(state.get("tcp_d_rs",  0.0)))
-            out[1].tags["data.sendWindowSize"]       = str(int(state.get("tcp_swnd", 0.0)))
-            out[1].tags["data.congestionWindowSize"] = str(int(state.get("tcp_cwnd", 0.0)))
-            out[1].tags["data.receiveWindowSize"]    = str(int(state.get("tcp_rwnd", 0.0)))
-            out[1].tags["data.roundTripTime"]        = str(int(state.get("tcp_rtt",  0.0)))
-            out[1].tags["data.connections"]          = str(int(state.get("tcp_conn", 0.0)))
+            out[1].tags["data.inBytes"]           = str(int(state.get("tcp_d_in",  0.0)))
+            out[1].tags["data.outBytes"]          = str(int(state.get("tcp_d_out", 0.0)))
+            out[1].tags["data.retransmittedSegs"] = str(int(state.get("tcp_d_rs",  0.0)))
             state["tcp_d_in"]  = 0.0
             state["tcp_d_out"] = 0.0
             state["tcp_d_rs"]  = 0.0
@@ -257,11 +256,6 @@ def apply(metric):
         state["tcp_d_in"]  = state.get("tcp_d_in",  0.0) + float(d_in)
         state["tcp_d_out"] = state.get("tcp_d_out", 0.0) + float(d_out)
         state["tcp_d_rs"]  = state.get("tcp_d_rs",  0.0) + float(d_rs)
-        state["tcp_swnd"]  = swnd
-        state["tcp_cwnd"]  = cwnd
-        state["tcp_rwnd"]  = rwnd
-        state["tcp_rtt"]   = rtt
-        state["tcp_conn"]  = conn
         return out
 
     return [metric]

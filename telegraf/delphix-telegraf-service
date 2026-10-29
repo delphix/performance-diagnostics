@@ -16,6 +16,18 @@ TELEGRAF_CONFIG_DIR=/etc/telegraf/telegraf.d
 
 export DELPHIX_SYSTEM_UUID=$(get-system-uuid 2>/dev/null || echo "unknown")
 export DELPHIX_SYSTEM_VERSION=$(get-appliance-version 2>/dev/null || echo "unknown")
+# Guard against envsubst-injection into the Starlark triple-quoted TOML string:
+# allow only characters that can safely appear in a Starlark double-quoted
+# string literal. Anything else -> fall back to "unknown" so the service still
+# starts (metrics will tag identity as unknown rather than failing to launch).
+if [[ ! "$DELPHIX_SYSTEM_UUID" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+	logger -t delphix-telegraf "WARNING: get-system-uuid returned a value with unsafe characters — using 'unknown' as fallback"
+	export DELPHIX_SYSTEM_UUID="unknown"
+fi
+if [[ ! "$DELPHIX_SYSTEM_VERSION" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+	logger -t delphix-telegraf "WARNING: get-appliance-version returned a value with unsafe characters — using 'unknown' as fallback"
+	export DELPHIX_SYSTEM_VERSION="unknown"
+fi
 
 function engine_is_dct() {
 	/usr/bin/get-appliance-variant | grep -q "dct" >/dev/null
