@@ -5,11 +5,29 @@ DCT_INPUTS=/etc/telegraf/telegraf.inputs.dct
 PLAYBOOK_INPUTS=/etc/telegraf/telegraf.inputs.playbook
 STORAGE_IO_INPUTS=/etc/telegraf/telegraf.inputs.storage_io
 INFLUXDB_OUTPUT=/etc/telegraf/telegraf.outputs.influxdb
+FLUENTD_OUTPUT=/etc/telegraf/telegraf.outputs.fluentd
+FLUENTD_PROCESSOR=/etc/telegraf/telegraf.processors.fluentd
 PLAYBOOK_FLAG=/etc/telegraf/PLAYBOOK_ENABLED
 INFLUXDB_FLAG=/etc/telegraf/INFLUXDB_ENABLED
+FLUENTD_FLAG=/etc/telegraf/FLUENTD_ENABLED
 TELEGRAF_CONFIG=/etc/telegraf/telegraf.conf
 TELEGRAF_CONFIG_DIR=/etc/telegraf/telegraf.d
 
+
+export DELPHIX_SYSTEM_UUID=$(get-system-uuid 2>/dev/null || echo "unknown")
+export DELPHIX_SYSTEM_VERSION=$(get-appliance-version 2>/dev/null || echo "unknown")
+# Guard against envsubst-injection into the Starlark triple-quoted TOML string:
+# allow only characters that can safely appear in a Starlark double-quoted
+# string literal. Anything else -> fall back to "unknown" so the service still
+# starts (metrics will tag identity as unknown rather than failing to launch).
+if [[ ! "$DELPHIX_SYSTEM_UUID" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+	logger -t delphix-telegraf "WARNING: get-system-uuid returned a value with unsafe characters — using 'unknown' as fallback"
+	export DELPHIX_SYSTEM_UUID="unknown"
+fi
+if [[ ! "$DELPHIX_SYSTEM_VERSION" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+	logger -t delphix-telegraf "WARNING: get-appliance-version returned a value with unsafe characters — using 'unknown' as fallback"
+	export DELPHIX_SYSTEM_VERSION="unknown"
+fi
 
 function engine_is_dct() {
 	/usr/bin/get-appliance-variant | grep -q "dct" >/dev/null
@@ -27,6 +45,10 @@ function playbook_is_enabled() {
 
 function influxdb_is_enabled() {
 	[[ -f $INFLUXDB_FLAG ]]
+}
+
+function fluentd_is_enabled() {
+	[[ -f $FLUENTD_FLAG ]]
 }
 
 rm -f $TELEGRAF_CONFIG
@@ -51,16 +73,43 @@ else
 	fi
 fi
 
-if influxdb_is_enabled && [[ -f $INFLUXDB_OUTPUT ]]; then
+has_output=false
+
+# Include storage I/O inputs (estat_nfs, estat_iscsi, estat_backend-io) whenever
+# any active output consumes those measurements — either InfluxDB or fluentd.
+if { influxdb_is_enabled && [[ -f $INFLUXDB_OUTPUT ]]; } ||
+   { fluentd_is_enabled && [[ -f $FLUENTD_OUTPUT ]]; }; then
 	if [[ -f $STORAGE_IO_INPUTS ]]; then
 		cat $STORAGE_IO_INPUTS >> $TELEGRAF_CONFIG
 	fi
+fi
+
+if influxdb_is_enabled && [[ -f $INFLUXDB_OUTPUT ]]; then
 	cat $INFLUXDB_OUTPUT >> $TELEGRAF_CONFIG
+	has_output=true
 else
 	if influxdb_is_enabled; then
 		logger -t delphix-telegraf "WARNING: INFLUXDB_ENABLED is set but $INFLUXDB_OUTPUT is missing — metrics will be discarded. Run delphix-influxdb-init to restore InfluxDB output."
 	fi
-	# No InfluxDB output configured. Add discard so Telegraf can start —
+fi
+
+if fluentd_is_enabled && [[ -f $FLUENTD_OUTPUT ]]; then
+	if [[ ! -f $FLUENTD_PROCESSOR ]]; then
+		logger -t delphix-telegraf "ERROR: FLUENTD_ENABLED is set but $FLUENTD_PROCESSOR is missing — raw Telegraf metric names will be forwarded, breaking existing Splunk dashboards. Reinstall the delphix-perfdiag package to restore it."
+	else
+		# Interpolate DELPHIX_SYSTEM_UUID / DELPHIX_SYSTEM_VERSION into the
+		# processor's starlark source. Telegraf's own ${VAR} substitution does
+		# not reach inside triple-quoted TOML strings, so we do it here.
+		envsubst '${DELPHIX_SYSTEM_UUID} ${DELPHIX_SYSTEM_VERSION}' < $FLUENTD_PROCESSOR >> $TELEGRAF_CONFIG
+	fi
+	cat $FLUENTD_OUTPUT >> $TELEGRAF_CONFIG
+	has_output=true
+elif fluentd_is_enabled; then
+	logger -t delphix-telegraf "WARNING: FLUENTD_ENABLED is set but $FLUENTD_OUTPUT is missing — metrics will be discarded. Reinstall the delphix-perfdiag package to restore fluentd output."
+fi
+
+if [[ "$has_output" != "true" ]]; then
+	# No output configured. Add discard so Telegraf can start —
 	# it requires at least one output plugin.
 	echo "[[outputs.discard]]" >> $TELEGRAF_CONFIG
 fi

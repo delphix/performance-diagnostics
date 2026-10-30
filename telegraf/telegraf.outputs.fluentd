@@ -1,0 +1,22 @@
+# Telegraf HTTP output → local fluentd HTTP source.
+# Forwards performance analytics metrics to fluentd, which routes them to
+# third-party monitoring systems (Splunk, Datadog) via existing
+# <match delphix.metrics.**> rules in fluent.conf.stg.
+# Included by delphix-telegraf-service when FLUENTD_ENABLED flag exists.
+[[outputs.http]]
+  url = "http://localhost:9880/delphix.metrics.platform"
+  method = "POST"
+  data_format = "splunkmetric"
+  splunkmetric_hec_routing = true
+  # One POST per metric: batched splunkmetric emits concatenated JSON with no delimiter, which fluentd's JSON parser silently truncates to the first object.
+  use_batch_format = false
+  flush_interval = "60s"
+  timeout = "10s"
+  # Buffer a few minutes of compat metrics so a brief fluentd restart doesn't
+  # lose data. The processor emits ~6 metrics per flush (one per Java metric
+  # name), so 2048 buffers > 5 hours of history — well above typical downtime.
+  metric_buffer_limit = 2048
+  namepass = ["system.cpu.util", "system.net.total", "system.disk.ops",
+              "system.nfs.ops", "system.iscsi.ops", "system.tcp.total"]
+  [outputs.http.headers]
+    Content-Type = "application/json"

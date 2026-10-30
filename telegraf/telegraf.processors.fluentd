@@ -1,0 +1,262 @@
+# Starlark processor — maps Telegraf measurements to Java InsightLogger metric
+# names (system.*) with semantics matching Java's pushInsightMetric.
+# Attaches rich data.* breakdown fields alongside _value (Telegraf-native names).
+#
+# Note: round() triggers a Telegraf 1.40.2 starlark resolver bug ("undefined:
+# state"). We emit numeric values via plain str() instead.
+#
+# ${DELPHIX_SYSTEM_UUID} / ${DELPHIX_SYSTEM_VERSION} are substituted at TOML
+# parse time from env vars exported by delphix-telegraf-service.
+#
+# Included by delphix-telegraf-service when FLUENTD_ENABLED flag exists.
+[[processors.starlark]]
+  namepass = ["cpu", "diskio", "net", "estat_nfs", "estat_iscsi", "tcp_stats"]
+  # Run after the base-config storage_io processors (order 1-3): the name=total
+  # row filter must execute first, otherwise read + write + total rows all land
+  # in our accumulators and NFS/iSCSI ops counts come out doubled.
+  order = 4
+  source = '''
+UUID      = "${DELPHIX_SYSTEM_UUID}"
+VERSION   = "${DELPHIX_SYSTEM_VERSION}"
+BUCKET_NS = 60 * 1000 * 1000 * 1000
+
+def tag_identity(m):
+    m.tags["systemUniqueId"] = UUID
+    m.tags["systemVersion"]  = VERSION
+    return m
+
+def cumulative_delta(key, current):
+    # Delta since the previous call for this key, or 0 on the first call
+    # (no previous baseline). Guards against counter wrap / device reset.
+    prev = state.get(key, None)
+    state[key] = current
+    if prev == None:
+        return 0
+    d = current - prev
+    if d < 0:
+        return 0
+    return d
+
+def flush_counter(prefix, measurement, field, bucket):
+    # If we have crossed a 60s bucket boundary, emit the previous bucket's
+    # accumulated sum and reset the accumulator for the new bucket. Returns a
+    # list (possibly empty) of metrics to emit.
+    bk = prefix + "_bucket"
+    ak = prefix + "_acc"
+    prev_bucket = state.get(bk, None)
+    out = []
+    if prev_bucket != None and prev_bucket != bucket:
+        acc = state.get(ak, 0.0)
+        m = Metric(measurement)
+        m.time = prev_bucket * BUCKET_NS
+        m.fields[field] = acc
+        out.append(tag_identity(m))
+        state[ak] = 0.0
+    state[bk] = bucket
+    return out
+
+def flush_gauge(prefix, measurement, field, bucket):
+    # Gauge version: emit the previous bucket's last-seen value when the
+    # bucket boundary is crossed. "last" is updated after this call.
+    bk = prefix + "_bucket"
+    lk = prefix + "_last"
+    prev_bucket = state.get(bk, None)
+    out = []
+    if prev_bucket != None and prev_bucket != bucket and lk in state:
+        m = Metric(measurement)
+        m.time = prev_bucket * BUCKET_NS
+        m.fields[field] = state[lk]
+        out.append(tag_identity(m))
+    state[bk] = bucket
+    return out
+
+def apply(metric):
+    name   = metric.name
+    ts     = metric.time
+    bucket = ts // BUCKET_NS
+
+    # system.cpu.util.pct — data.* carries all 7 cpu-time breakdown fields.
+    if name == "cpu":
+        if metric.tags.get("cpu") != "cpu-total":
+            return [metric]
+        if "usage_idle" not in metric.fields:
+            return [metric]
+        out = [metric]
+        out = out + flush_gauge("cpu", "system.cpu.util", "pct", bucket)
+        if len(out) > 1:
+            out[1].tags["data.user"]    = str(state.get("cpu_d_usr", 0.0))
+            out[1].tags["data.system"]  = str(state.get("cpu_d_sys", 0.0))
+            out[1].tags["data.idle"]    = str(state.get("cpu_d_idl", 0.0))
+            out[1].tags["data.iowait"]  = str(state.get("cpu_d_iow", 0.0))
+            out[1].tags["data.irq"]     = str(state.get("cpu_d_irq", 0.0))
+            out[1].tags["data.softirq"] = str(state.get("cpu_d_sir", 0.0))
+            out[1].tags["data.steal"]   = str(state.get("cpu_d_stl", 0.0))
+        state["cpu_last"]  = 100.0 - float(metric.fields["usage_idle"])
+        state["cpu_d_usr"] = float(metric.fields.get("usage_user",    0))
+        state["cpu_d_sys"] = float(metric.fields.get("usage_system",  0))
+        state["cpu_d_idl"] = float(metric.fields.get("usage_idle",    0))
+        state["cpu_d_iow"] = float(metric.fields.get("usage_iowait",  0))
+        state["cpu_d_irq"] = float(metric.fields.get("usage_irq",     0))
+        state["cpu_d_sir"] = float(metric.fields.get("usage_softirq", 0))
+        state["cpu_d_stl"] = float(metric.fields.get("usage_steal",   0))
+        return out
+
+    # system.nfs.ops.count — data.* includes read/write ops + latency + throughput.
+    if name == "estat_nfs":
+        if "iops(/s)" not in metric.fields:
+            return [metric]
+        iops       = float(metric.fields["iops(/s)"]) * 10.0
+        latency    = float(metric.fields.get("avg latency(us)", 0))
+        throughput = float(metric.fields.get("throughput(k/s)", 0))
+        direction  = metric.tags.get("name", "")
+        out = [metric]
+        out = out + flush_counter("nfs", "system.nfs.ops", "count", bucket)
+        if len(out) > 1:
+            out[1].tags["data.readOps"]         = str(int(state.get("nfs_d_r", 0.0)))
+            out[1].tags["data.writeOps"]        = str(int(state.get("nfs_d_w", 0.0)))
+            out[1].tags["data.readLatency"]     = str(state.get("nfs_rl", 0.0))
+            out[1].tags["data.writeLatency"]    = str(state.get("nfs_wl", 0.0))
+            out[1].tags["data.readThroughput"]  = str(state.get("nfs_rt", 0.0))
+            out[1].tags["data.writeThroughput"] = str(state.get("nfs_wt", 0.0))
+            state["nfs_d_r"] = 0.0
+            state["nfs_d_w"] = 0.0
+        state["nfs_acc"] = state.get("nfs_acc", 0.0) + iops
+        if direction == "read":
+            state["nfs_d_r"] = state.get("nfs_d_r", 0.0) + iops
+            state["nfs_rl"]  = latency
+            state["nfs_rt"]  = throughput
+        else:
+            state["nfs_d_w"] = state.get("nfs_d_w", 0.0) + iops
+            state["nfs_wl"]  = latency
+            state["nfs_wt"]  = throughput
+        return out
+
+    # system.iscsi.ops.count — same shape as nfs.
+    if name == "estat_iscsi":
+        if "iops(/s)" not in metric.fields:
+            return [metric]
+        iops       = float(metric.fields["iops(/s)"]) * 10.0
+        latency    = float(metric.fields.get("avg latency(us)", 0))
+        throughput = float(metric.fields.get("throughput(k/s)", 0))
+        direction  = metric.tags.get("name", "")
+        out = [metric]
+        out = out + flush_counter("iscsi", "system.iscsi.ops", "count", bucket)
+        if len(out) > 1:
+            out[1].tags["data.readOps"]         = str(int(state.get("isc_d_r", 0.0)))
+            out[1].tags["data.writeOps"]        = str(int(state.get("isc_d_w", 0.0)))
+            out[1].tags["data.readLatency"]     = str(state.get("isc_rl", 0.0))
+            out[1].tags["data.writeLatency"]    = str(state.get("isc_wl", 0.0))
+            out[1].tags["data.readThroughput"]  = str(state.get("isc_rt", 0.0))
+            out[1].tags["data.writeThroughput"] = str(state.get("isc_wt", 0.0))
+            state["isc_d_r"] = 0.0
+            state["isc_d_w"] = 0.0
+        state["iscsi_acc"] = state.get("iscsi_acc", 0.0) + iops
+        if direction == "read":
+            state["isc_d_r"] = state.get("isc_d_r", 0.0) + iops
+            state["isc_rl"]  = latency
+            state["isc_rt"]  = throughput
+        else:
+            state["isc_d_w"] = state.get("isc_d_w", 0.0) + iops
+            state["isc_wl"]  = latency
+            state["isc_wt"]  = throughput
+        return out
+
+    # system.net.total.bytes — data.* includes bytes + packets.
+    if name == "net":
+        iface = metric.tags.get("interface", "")
+        recv = int(metric.fields.get("bytes_recv", 0))
+        sent = int(metric.fields.get("bytes_sent", 0))
+        recv_pkt = int(metric.fields.get("packets_recv", 0))
+        sent_pkt = int(metric.fields.get("packets_sent", 0))
+        d_in  = cumulative_delta("net_r_"  + iface, recv)
+        d_out = cumulative_delta("net_s_"  + iface, sent)
+        d_ip  = cumulative_delta("net_rp_" + iface, recv_pkt)
+        d_op  = cumulative_delta("net_sp_" + iface, sent_pkt)
+        out = [metric]
+        out = out + flush_counter("net", "system.net.total", "bytes", bucket)
+        if len(out) > 1:
+            out[1].tags["data.inBytes"]    = str(int(state.get("net_d_in",  0.0)))
+            out[1].tags["data.outBytes"]   = str(int(state.get("net_d_out", 0.0)))
+            out[1].tags["data.inPackets"]  = str(int(state.get("net_d_ip",  0.0)))
+            out[1].tags["data.outPackets"] = str(int(state.get("net_d_op",  0.0)))
+            state["net_d_in"]  = 0.0
+            state["net_d_out"] = 0.0
+            state["net_d_ip"]  = 0.0
+            state["net_d_op"]  = 0.0
+        state["net_acc"]   = state.get("net_acc",   0.0) + float(d_in + d_out)
+        state["net_d_in"]  = state.get("net_d_in",  0.0) + float(d_in)
+        state["net_d_out"] = state.get("net_d_out", 0.0) + float(d_out)
+        state["net_d_ip"]  = state.get("net_d_ip",  0.0) + float(d_ip)
+        state["net_d_op"]  = state.get("net_d_op",  0.0) + float(d_op)
+        return out
+
+    # system.disk.ops.count — data.* includes reads/writes + bytes + times.
+    if name == "diskio":
+        dev = metric.tags.get("name", "")
+        r  = int(metric.fields.get("reads",  0))
+        w  = int(metric.fields.get("writes", 0))
+        rb = int(metric.fields.get("read_bytes",  0))
+        wb = int(metric.fields.get("write_bytes", 0))
+        rt = int(metric.fields.get("read_time",   0))
+        wt = int(metric.fields.get("write_time",  0))
+        d_r  = cumulative_delta("disk_r_"  + dev, r)
+        d_w  = cumulative_delta("disk_w_"  + dev, w)
+        d_rb = cumulative_delta("disk_rb_" + dev, rb)
+        d_wb = cumulative_delta("disk_wb_" + dev, wb)
+        d_rt = cumulative_delta("disk_rt_" + dev, rt)
+        d_wt = cumulative_delta("disk_wt_" + dev, wt)
+        out = [metric]
+        out = out + flush_counter("disk", "system.disk.ops", "count", bucket)
+        if len(out) > 1:
+            out[1].tags["data.reads"]        = str(int(state.get("dsk_d_r",  0.0)))
+            out[1].tags["data.writes"]       = str(int(state.get("dsk_d_w",  0.0)))
+            out[1].tags["data.bytesRead"]    = str(int(state.get("dsk_d_rb", 0.0)))
+            out[1].tags["data.bytesWritten"] = str(int(state.get("dsk_d_wb", 0.0)))
+            out[1].tags["data.readTime"]     = str(int(state.get("dsk_d_rt", 0.0)))
+            out[1].tags["data.writeTime"]    = str(int(state.get("dsk_d_wt", 0.0)))
+            state["dsk_d_r"]  = 0.0
+            state["dsk_d_w"]  = 0.0
+            state["dsk_d_rb"] = 0.0
+            state["dsk_d_wb"] = 0.0
+            state["dsk_d_rt"] = 0.0
+            state["dsk_d_wt"] = 0.0
+        state["disk_acc"] = state.get("disk_acc", 0.0) + float(d_r + d_w)
+        state["dsk_d_r"]  = state.get("dsk_d_r",  0.0) + float(d_r)
+        state["dsk_d_w"]  = state.get("dsk_d_w",  0.0) + float(d_w)
+        state["dsk_d_rb"] = state.get("dsk_d_rb", 0.0) + float(d_rb)
+        state["dsk_d_wb"] = state.get("dsk_d_wb", 0.0) + float(d_wb)
+        state["dsk_d_rt"] = state.get("dsk_d_rt", 0.0) + float(d_rt)
+        state["dsk_d_wt"] = state.get("dsk_d_wt", 0.0) + float(d_wt)
+        return out
+
+    # system.tcp.total.bytes — data.* carries true per-bucket deltas only.
+    # swnd/cwnd/rwnd/rtt/connections were dropped: they were last-write-wins
+    # across endpoints, so the emitted value reflected whichever connection
+    # happened to be processed last in the bucket rather than any meaningful
+    # aggregate. Per-endpoint window/rtt would require per-endpoint events,
+    # which is out of scope for the aggregated system.tcp.total.bytes metric.
+    if name == "tcp_stats":
+        key  = metric.tags.get("laddr", "") + "|" + metric.tags.get("raddr", "") + "|" + metric.tags.get("service", "")
+        inb  = int(metric.fields.get("inbytes",  0))
+        outb = int(metric.fields.get("outbytes", 0))
+        rseg = int(metric.fields.get("retranssegs", 0))
+        d_in  = cumulative_delta("tcp_in_"  + key, inb)
+        d_out = cumulative_delta("tcp_out_" + key, outb)
+        d_rs  = cumulative_delta("tcp_rs_"  + key, rseg)
+        out = [metric]
+        out = out + flush_counter("tcp", "system.tcp.total", "bytes", bucket)
+        if len(out) > 1:
+            out[1].tags["data.inBytes"]           = str(int(state.get("tcp_d_in",  0.0)))
+            out[1].tags["data.outBytes"]          = str(int(state.get("tcp_d_out", 0.0)))
+            out[1].tags["data.retransmittedSegs"] = str(int(state.get("tcp_d_rs",  0.0)))
+            state["tcp_d_in"]  = 0.0
+            state["tcp_d_out"] = 0.0
+            state["tcp_d_rs"]  = 0.0
+        state["tcp_acc"]   = state.get("tcp_acc",   0.0) + float(d_in + d_out)
+        state["tcp_d_in"]  = state.get("tcp_d_in",  0.0) + float(d_in)
+        state["tcp_d_out"] = state.get("tcp_d_out", 0.0) + float(d_out)
+        state["tcp_d_rs"]  = state.get("tcp_d_rs",  0.0) + float(d_rs)
+        return out
+
+    return [metric]
+'''
