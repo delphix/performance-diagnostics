@@ -10,6 +10,7 @@
 import argparse
 import json
 import os
+import signal
 import sys
 base_dir = os.path.dirname(__file__) + "/../"
 if not os.path.exists(base_dir + "lib/iterative_template.py"):
@@ -129,16 +130,35 @@ else:
            node != 'title':
             template.addSingleton(node, data[node])
 
+
+#
+# bcc detaches the probes from an atexit callback, which runs once the
+# interpreter has started shutting down and with signal delivery still
+# enabled. An interrupt that lands inside the detach aborts it and prints
+# the callback's traceback to stderr, even though the trace itself finished
+# and its datapoints are complete. Ignore the interrupt as soon as the
+# first one is taken, so the detach always runs to completion.
+#
+def ignore_interrupt():
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def exit_on_interrupt(signum, frame):
+    ignore_interrupt()
+    exit(0)
+
+
 # Perform template substitutions and execute or output the resulting script
 script = template.render()
 if args.bcc:
     print(script, end='')
     exit(0)
 else:
+    signal.signal(signal.SIGINT, exit_on_interrupt)
     try:
         exec(script)
-    except KeyboardInterrupt:
-        exit(0)
     except Exception as e:
         print(e)
         exit(1)
+    finally:
+        ignore_interrupt()

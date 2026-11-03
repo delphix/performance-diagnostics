@@ -133,9 +133,12 @@ class BCCHelper:
         #
         # Try to run atexit handlers if we are killed by a signal. BCC
         # registers handlers to detach kprobes, and if these aren't run the
-        # probes are leaked.
+        # probes are leaked. Ignore the signal before exiting, so that a
+        # later one cannot land inside the detach and leave its traceback
+        # on stderr.
         #
         def _handler(signum, frame):
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
             exit(1)
         signal.signal(signal.SIGTERM, _handler)
 
