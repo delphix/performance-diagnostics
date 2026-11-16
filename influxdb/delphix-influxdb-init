@@ -196,13 +196,16 @@ fi
 if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
 	log "InfluxDB already initialized, checking for configuration drift."
 	ADMIN_TOKEN=""; BUCKET_ID=""; SUPPORT_BUCKET_ID=""
+	_WRITE_TOKEN=""; _SUPPORT_WRITE_TOKEN=""
 	while IFS= read -r _line; do
 		[[ "$_line" =~ ^[[:space:]]*# ]] && continue
 		_key="${_line%%=*}"; _val="${_line#*=}"
 		case "$_key" in
-			INFLUXDB_ADMIN_TOKEN)       ADMIN_TOKEN="$_val" ;;
-			INFLUXDB_BUCKET_ID)         BUCKET_ID="$_val" ;;
-			INFLUXDB_SUPPORT_BUCKET_ID) SUPPORT_BUCKET_ID="$_val" ;;
+			INFLUXDB_ADMIN_TOKEN)         ADMIN_TOKEN="$_val" ;;
+			INFLUXDB_BUCKET_ID)           BUCKET_ID="$_val" ;;
+			INFLUXDB_SUPPORT_BUCKET_ID)   SUPPORT_BUCKET_ID="$_val" ;;
+			INFLUXDB_WRITE_TOKEN)         _WRITE_TOKEN="$_val" ;;
+			INFLUXDB_SUPPORT_WRITE_TOKEN) _SUPPORT_WRITE_TOKEN="$_val" ;;
 		esac
 	done <"$INFLUXDB_META_FILE"
 
@@ -222,6 +225,19 @@ if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
 					log "WARNING: Failed to update retention for bucket $_bid — will retry on next run."
 			fi
 		done
+	fi
+
+	# Reconcile the telegraf output filter template against what's on disk so
+	# namepass/namedrop additions (e.g. "system.*" exclusion) propagate to
+	# existing installations on upgrade. write_telegraf_output is idempotent:
+	# if the generated file matches the current one, this is effectively a no-op.
+	if [[ -n "$_WRITE_TOKEN" && -n "$_SUPPORT_WRITE_TOKEN" ]]; then
+		_current_output=$(cat "$INFLUXDB_OUTPUT")
+		write_telegraf_output "$_WRITE_TOKEN" "$_SUPPORT_WRITE_TOKEN"
+		if [[ "$_current_output" != "$(cat "$INFLUXDB_OUTPUT")" ]]; then
+			log "Telegraf output filters regenerated from updated template."
+			systemctl restart delphix-telegraf 2>/dev/null || true
+		fi
 	fi
 	exit 0
 fi

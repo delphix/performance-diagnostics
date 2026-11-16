@@ -28,7 +28,13 @@ function enable_fluentd() {
 	fi
 	echo "Enabling fluentd 3rd-party metric forwarding"
 	touch $FLUENTD_FLAG || die "Failed to create $FLUENTD_FLAG"
-	systemctl restart delphix-telegraf || die "Failed to restart delphix-telegraf"
+	# Roll back the flag on restart failure so a retry doesn't short-circuit
+	# at the "already enabled" check above and mistake a half-applied state
+	# for success.
+	if ! systemctl restart delphix-telegraf; then
+		rm -f $FLUENTD_FLAG
+		die "Failed to restart delphix-telegraf — rolled back $FLUENTD_FLAG"
+	fi
 }
 
 function disable_fluentd() {
@@ -38,8 +44,13 @@ function disable_fluentd() {
 		return 0
 	fi
 	echo "Disabling fluentd 3rd-party metric forwarding"
-	rm -f $FLUENTD_FLAG
-	systemctl restart delphix-telegraf || die "Failed to restart delphix-telegraf"
+	rm -f $FLUENTD_FLAG || die "Failed to remove $FLUENTD_FLAG"
+	# Same rationale as enable: if the restart fails after we've already
+	# removed the flag, restore it so the next invocation actually retries.
+	if ! systemctl restart delphix-telegraf; then
+		touch $FLUENTD_FLAG
+		die "Failed to restart delphix-telegraf — restored $FLUENTD_FLAG"
+	fi
 }
 
 function status_fluentd() {

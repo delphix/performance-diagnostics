@@ -96,6 +96,13 @@ fi
 if fluentd_is_enabled && [[ -f $FLUENTD_OUTPUT ]]; then
 	if [[ ! -f $FLUENTD_PROCESSOR ]]; then
 		logger -t delphix-telegraf "ERROR: FLUENTD_ENABLED is set but $FLUENTD_PROCESSOR is missing — no metrics will be forwarded (fluentd output's namepass admits only the system.* names the processor would have created). Reinstall the delphix-perfdiag package to restore it."
+	elif ! command -v envsubst >/dev/null 2>&1; then
+		# envsubst is supplied by gettext-base; without it we can't interpolate
+		# UUID/version into the processor. Loud syslog + skip the processor; the
+		# HTTP output is still appended so has_output stays true (prevents the
+		# discard fallback below), and forwarded-metric count is zero because
+		# the namepass admits only system.* names nothing is producing.
+		logger -t delphix-telegraf "ERROR: envsubst missing (install gettext-base) — cannot interpolate system UUID/version into $FLUENTD_PROCESSOR. Fluentd forwarding will not emit any metrics this boot."
 	else
 		# Interpolate DELPHIX_SYSTEM_UUID / DELPHIX_SYSTEM_VERSION into the
 		# processor's starlark source. Telegraf's own ${VAR} substitution does
