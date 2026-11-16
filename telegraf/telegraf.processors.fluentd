@@ -118,15 +118,15 @@ def apply(metric):
             m.time = prev_bucket * BUCKET_NS
             m.fields["pct"] = pct
             out.append(tag_identity(m))
-            out[1].tags["data.user"]    = str(user_ms)
-            out[1].tags["data.kernel"]  = str(kernel_ms)
-            out[1].tags["data.idle"]    = str(idle_ms)
-            out[1].tags["data.nice"]    = str(state.get("cpu_nice_ms",    0.0))
-            out[1].tags["data.system"]  = str(state.get("cpu_sys_ms",     0.0))
-            out[1].tags["data.iowait"]  = str(state.get("cpu_iowait_ms",  0.0))
-            out[1].tags["data.irq"]     = str(state.get("cpu_irq_ms",     0.0))
-            out[1].tags["data.softirq"] = str(state.get("cpu_softirq_ms", 0.0))
-            out[1].tags["data.steal"]   = str(state.get("cpu_steal_ms",   0.0))
+            out[1].tags["data.user"]    = str(int(user_ms))
+            out[1].tags["data.kernel"]  = str(int(kernel_ms))
+            out[1].tags["data.idle"]    = str(int(idle_ms))
+            out[1].tags["data.nice"]    = str(int(state.get("cpu_nice_ms",    0.0)))
+            out[1].tags["data.system"]  = str(int(state.get("cpu_sys_ms",     0.0)))
+            out[1].tags["data.iowait"]  = str(int(state.get("cpu_iowait_ms",  0.0)))
+            out[1].tags["data.irq"]     = str(int(state.get("cpu_irq_ms",     0.0)))
+            out[1].tags["data.softirq"] = str(int(state.get("cpu_softirq_ms", 0.0)))
+            out[1].tags["data.steal"]   = str(int(state.get("cpu_steal_ms",   0.0)))
             state["cpu_user_ms"]    = 0.0
             state["cpu_kernel_ms"]  = 0.0
             state["cpu_idle_ms"]    = 0.0
@@ -158,10 +158,15 @@ def apply(metric):
     # multiply by 10.0 to recover the per-sample total and cross-sample sums
     # give the per-minute total Java emitted.
     # Latency is Java's AVERAGE axis (StatisticType.java:154-157), combined as
-    # count-weighted mean (AnalyticsDatapointDO.combineWith:226-236): we weight
-    # each row's latency by its ops contribution so both cross-axis (cached /
-    # uncached in one sample) and cross-sample (10s samples in a 60s bucket)
-    # reduce to sum(latency × ops) / sum(ops) at flush.
+    # count-weighted mean (AnalyticsDatapointDO.combineWith:226-236). We
+    # weight each row's latency by max(iops, 1.0) instead of bare iops because
+    # bcchelper.py:235-240 applies integer division (count // 10 for -jm 10),
+    # flooring any row with < 10 ops/sample to iops=0 — using bare iops would
+    # silently drop that row's latency entirely. The floor-to-1 fallback keeps
+    # slow uncached reads (low count, high latency) in the weighted mean rather
+    # than discarding them, trading a slight over-weight for the imprecision
+    # bcchelper's integer division already introduced. Full fix requires
+    # bcchelper to expose the raw per-interval count.
     # All accumulators reset at bucket flush to avoid stale carry-over.
     if name == "estat_nfs":
         if "iops(/s)" not in metric.fields:
@@ -179,10 +184,10 @@ def apply(metric):
             nfs_wl = state.get("nfs_wl_sum", 0.0) / nfs_wl_w if nfs_wl_w > 0 else 0.0
             out[1].tags["data.readOps"]         = str(int(state.get("nfs_d_r", 0.0)))
             out[1].tags["data.writeOps"]        = str(int(state.get("nfs_d_w", 0.0)))
-            out[1].tags["data.readLatency"]     = str(nfs_rl)
-            out[1].tags["data.writeLatency"]    = str(nfs_wl)
-            out[1].tags["data.readThroughput"]  = str(state.get("nfs_rt", 0.0))
-            out[1].tags["data.writeThroughput"] = str(state.get("nfs_wt", 0.0))
+            out[1].tags["data.readLatency"]     = str(int(nfs_rl))
+            out[1].tags["data.writeLatency"]    = str(int(nfs_wl))
+            out[1].tags["data.readThroughput"]  = str(int(state.get("nfs_rt", 0.0)))
+            out[1].tags["data.writeThroughput"] = str(int(state.get("nfs_wt", 0.0)))
             state["nfs_d_r"]    = 0.0
             state["nfs_d_w"]    = 0.0
             state["nfs_rt"]     = 0.0
@@ -193,15 +198,17 @@ def apply(metric):
             state["nfs_wl_w"]   = 0.0
         state["nfs_acc"] = state.get("nfs_acc", 0.0) + iops
         if direction == "read":
+            w = iops if iops > 0 else 1.0
             state["nfs_d_r"]    = state.get("nfs_d_r",    0.0) + iops
             state["nfs_rt"]     = state.get("nfs_rt",     0.0) + throughput
-            state["nfs_rl_sum"] = state.get("nfs_rl_sum", 0.0) + latency * iops
-            state["nfs_rl_w"]   = state.get("nfs_rl_w",   0.0) + iops
+            state["nfs_rl_sum"] = state.get("nfs_rl_sum", 0.0) + latency * w
+            state["nfs_rl_w"]   = state.get("nfs_rl_w",   0.0) + w
         else:
+            w = iops if iops > 0 else 1.0
             state["nfs_d_w"]    = state.get("nfs_d_w",    0.0) + iops
             state["nfs_wt"]     = state.get("nfs_wt",     0.0) + throughput
-            state["nfs_wl_sum"] = state.get("nfs_wl_sum", 0.0) + latency * iops
-            state["nfs_wl_w"]   = state.get("nfs_wl_w",   0.0) + iops
+            state["nfs_wl_sum"] = state.get("nfs_wl_sum", 0.0) + latency * w
+            state["nfs_wl_w"]   = state.get("nfs_wl_w",   0.0) + w
         return out
 
     # system.iscsi.ops.count — same shape as nfs. iSCSI "name" tag is bare
@@ -223,10 +230,10 @@ def apply(metric):
             isc_wl = state.get("isc_wl_sum", 0.0) / isc_wl_w if isc_wl_w > 0 else 0.0
             out[1].tags["data.readOps"]         = str(int(state.get("isc_d_r", 0.0)))
             out[1].tags["data.writeOps"]        = str(int(state.get("isc_d_w", 0.0)))
-            out[1].tags["data.readLatency"]     = str(isc_rl)
-            out[1].tags["data.writeLatency"]    = str(isc_wl)
-            out[1].tags["data.readThroughput"]  = str(state.get("isc_rt", 0.0))
-            out[1].tags["data.writeThroughput"] = str(state.get("isc_wt", 0.0))
+            out[1].tags["data.readLatency"]     = str(int(isc_rl))
+            out[1].tags["data.writeLatency"]    = str(int(isc_wl))
+            out[1].tags["data.readThroughput"]  = str(int(state.get("isc_rt", 0.0)))
+            out[1].tags["data.writeThroughput"] = str(int(state.get("isc_wt", 0.0)))
             state["isc_d_r"]    = 0.0
             state["isc_d_w"]    = 0.0
             state["isc_rt"]     = 0.0
@@ -237,15 +244,17 @@ def apply(metric):
             state["isc_wl_w"]   = 0.0
         state["iscsi_acc"] = state.get("iscsi_acc", 0.0) + iops
         if direction == "read":
+            w = iops if iops > 0 else 1.0
             state["isc_d_r"]    = state.get("isc_d_r",    0.0) + iops
             state["isc_rt"]     = state.get("isc_rt",     0.0) + throughput
-            state["isc_rl_sum"] = state.get("isc_rl_sum", 0.0) + latency * iops
-            state["isc_rl_w"]   = state.get("isc_rl_w",   0.0) + iops
+            state["isc_rl_sum"] = state.get("isc_rl_sum", 0.0) + latency * w
+            state["isc_rl_w"]   = state.get("isc_rl_w",   0.0) + w
         else:
+            w = iops if iops > 0 else 1.0
             state["isc_d_w"]    = state.get("isc_d_w",    0.0) + iops
             state["isc_wt"]     = state.get("isc_wt",     0.0) + throughput
-            state["isc_wl_sum"] = state.get("isc_wl_sum", 0.0) + latency * iops
-            state["isc_wl_w"]   = state.get("isc_wl_w",   0.0) + iops
+            state["isc_wl_sum"] = state.get("isc_wl_sum", 0.0) + latency * w
+            state["isc_wl_w"]   = state.get("isc_wl_w",   0.0) + w
         return out
 
     # system.net.total.bytes — data.* includes bytes + packets.
