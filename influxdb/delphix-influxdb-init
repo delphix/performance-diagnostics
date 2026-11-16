@@ -229,12 +229,20 @@ if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
 
 	# Reconcile the telegraf output filter template against what's on disk so
 	# namepass/namedrop additions (e.g. "system.*" exclusion) propagate to
-	# existing installations on upgrade. write_telegraf_output is idempotent:
-	# if the generated file matches the current one, this is effectively a no-op.
+	# existing installations on upgrade. Unlike the first-boot path, telegraf
+	# is likely already running here — writing in place would briefly expose a
+	# truncated file to a concurrent telegraf reload. Generate into a tempfile
+	# on the same filesystem and rename atomically; compare before/after so
+	# the restart only fires when content actually changed.
 	if [[ -n "$_WRITE_TOKEN" && -n "$_SUPPORT_WRITE_TOKEN" ]]; then
-		_current_output=$(cat "$INFLUXDB_OUTPUT")
-		write_telegraf_output "$_WRITE_TOKEN" "$_SUPPORT_WRITE_TOKEN"
-		if [[ "$_current_output" != "$(cat "$INFLUXDB_OUTPUT")" ]]; then
+		_tmp_output=$(mktemp "${INFLUXDB_OUTPUT}.XXXXXX")
+		_real_output="$INFLUXDB_OUTPUT"
+		INFLUXDB_OUTPUT="$_tmp_output" write_telegraf_output "$_WRITE_TOKEN" "$_SUPPORT_WRITE_TOKEN"
+		if cmp -s "$_tmp_output" "$_real_output"; then
+			rm -f "$_tmp_output"
+		else
+			chmod --reference="$_real_output" "$_tmp_output" 2>/dev/null || chmod 640 "$_tmp_output"
+			mv "$_tmp_output" "$_real_output"
 			log "Telegraf output filters regenerated from updated template."
 			systemctl restart delphix-telegraf 2>/dev/null || true
 		fi
