@@ -137,6 +137,12 @@ write_telegraf_output() {
 	done
 	namepass_list+="]"
 
+	# Support-bucket namedrop also excludes system.* (compat metrics emitted by
+	# the fluentd processor for Splunk/Datadog forwarding) — none of these are
+	# consumed by DCT Flux templates, and each flush would create a new tag-
+	# combination series, bloating the 30-day support bundle.
+	local support_namedrop_list="${namepass_list%]}, \"system.*\"]"
+
 	cat >"$INFLUXDB_OUTPUT" <<EOF
 [[outputs.influxdb_v2]]
   urls = ["http://127.0.0.1:8086"]
@@ -144,13 +150,14 @@ write_telegraf_output() {
   organization = "$INFLUXDB_ORG"
   bucket = "$INFLUXDB_BUCKET"
   namepass = $namepass_list
+  namedrop = ["system.*"]
 
 [[outputs.influxdb_v2]]
   urls = ["http://127.0.0.1:8086"]
   token = "$support_write_token"
   organization = "$INFLUXDB_ORG"
   bucket = "$INFLUXDB_SUPPORT_BUCKET"
-  namedrop = $namepass_list
+  namedrop = $support_namedrop_list
 EOF
 	chmod 640 "$INFLUXDB_OUTPUT"
 }

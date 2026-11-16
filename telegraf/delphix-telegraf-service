@@ -95,7 +95,7 @@ fi
 
 if fluentd_is_enabled && [[ -f $FLUENTD_OUTPUT ]]; then
 	if [[ ! -f $FLUENTD_PROCESSOR ]]; then
-		logger -t delphix-telegraf "ERROR: FLUENTD_ENABLED is set but $FLUENTD_PROCESSOR is missing — raw Telegraf metric names will be forwarded, breaking existing Splunk dashboards. Reinstall the delphix-perfdiag package to restore it."
+		logger -t delphix-telegraf "ERROR: FLUENTD_ENABLED is set but $FLUENTD_PROCESSOR is missing — no metrics will be forwarded (fluentd output's namepass admits only the system.* names the processor would have created). Reinstall the delphix-perfdiag package to restore it."
 	else
 		# Interpolate DELPHIX_SYSTEM_UUID / DELPHIX_SYSTEM_VERSION into the
 		# processor's starlark source. Telegraf's own ${VAR} substitution does
