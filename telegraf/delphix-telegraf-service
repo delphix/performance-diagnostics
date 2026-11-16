@@ -28,6 +28,16 @@ if [[ ! "$DELPHIX_SYSTEM_VERSION" =~ ^[A-Za-z0-9._+-]+$ ]]; then
 	logger -t delphix-telegraf "WARNING: get-appliance-version returned a value with unsafe characters — using 'unknown' as fallback"
 	export DELPHIX_SYSTEM_VERSION="unknown"
 fi
+# DELPHIX_NCPU feeds the fluentd processor's cpu block, which converts Telegraf
+# per-cpu-total percentages into whole-system CPU milliseconds (ms = pct × 100 ×
+# ncpu per 10s sample) so system.cpu.util's data.user/kernel/idle match Java's
+# LocalCpuCollector units. nproc counts online CPUs at service start; a config
+# regen (bounce) is needed if the CPU count changes at runtime.
+export DELPHIX_NCPU=$(nproc 2>/dev/null || echo "1")
+if ! [[ "$DELPHIX_NCPU" =~ ^[1-9][0-9]*$ ]]; then
+	logger -t delphix-telegraf "WARNING: nproc returned a non-positive integer — defaulting DELPHIX_NCPU to 1"
+	export DELPHIX_NCPU="1"
+fi
 
 function engine_is_dct() {
 	/usr/bin/get-appliance-variant | grep -q "dct" >/dev/null
@@ -102,12 +112,12 @@ if fluentd_is_enabled && [[ -f $FLUENTD_OUTPUT ]]; then
 		# HTTP output is still appended so has_output stays true (prevents the
 		# discard fallback below), and forwarded-metric count is zero because
 		# the namepass admits only system.* names nothing is producing.
-		logger -t delphix-telegraf "ERROR: envsubst missing (install gettext-base) — cannot interpolate system UUID/version into $FLUENTD_PROCESSOR. Fluentd forwarding will not emit any metrics this boot."
+		logger -t delphix-telegraf "ERROR: envsubst missing (install gettext-base) — cannot interpolate system UUID/version/ncpu into $FLUENTD_PROCESSOR. Fluentd forwarding will not emit any metrics this boot."
 	else
 		# Interpolate DELPHIX_SYSTEM_UUID / DELPHIX_SYSTEM_VERSION into the
 		# processor's starlark source. Telegraf's own ${VAR} substitution does
 		# not reach inside triple-quoted TOML strings, so we do it here.
-		envsubst '${DELPHIX_SYSTEM_UUID} ${DELPHIX_SYSTEM_VERSION}' < $FLUENTD_PROCESSOR >> $TELEGRAF_CONFIG
+		envsubst '${DELPHIX_SYSTEM_UUID} ${DELPHIX_SYSTEM_VERSION} ${DELPHIX_NCPU}' < $FLUENTD_PROCESSOR >> $TELEGRAF_CONFIG
 	fi
 	cat $FLUENTD_OUTPUT >> $TELEGRAF_CONFIG
 	has_output=true
