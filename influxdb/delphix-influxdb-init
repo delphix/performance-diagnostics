@@ -137,6 +137,12 @@ write_telegraf_output() {
 	done
 	namepass_list+="]"
 
+	# Support-bucket namedrop also excludes system.* (compat metrics emitted by
+	# the fluentd processor for Splunk/Datadog forwarding) — none of these are
+	# consumed by DCT Flux templates, and each flush would create a new tag-
+	# combination series, bloating the 30-day support bundle.
+	local support_namedrop_list="${namepass_list%]}, \"system.*\"]"
+
 	cat >"$INFLUXDB_OUTPUT" <<EOF
 [[outputs.influxdb_v2]]
   urls = ["http://127.0.0.1:8086"]
@@ -144,13 +150,14 @@ write_telegraf_output() {
   organization = "$INFLUXDB_ORG"
   bucket = "$INFLUXDB_BUCKET"
   namepass = $namepass_list
+  namedrop = ["system.*"]
 
 [[outputs.influxdb_v2]]
   urls = ["http://127.0.0.1:8086"]
   token = "$support_write_token"
   organization = "$INFLUXDB_ORG"
   bucket = "$INFLUXDB_SUPPORT_BUCKET"
-  namedrop = $namepass_list
+  namedrop = $support_namedrop_list
 EOF
 	chmod 640 "$INFLUXDB_OUTPUT"
 }
@@ -189,13 +196,16 @@ fi
 if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
 	log "InfluxDB already initialized, checking for configuration drift."
 	ADMIN_TOKEN=""; BUCKET_ID=""; SUPPORT_BUCKET_ID=""
+	_WRITE_TOKEN=""; _SUPPORT_WRITE_TOKEN=""
 	while IFS= read -r _line; do
 		[[ "$_line" =~ ^[[:space:]]*# ]] && continue
 		_key="${_line%%=*}"; _val="${_line#*=}"
 		case "$_key" in
-			INFLUXDB_ADMIN_TOKEN)       ADMIN_TOKEN="$_val" ;;
-			INFLUXDB_BUCKET_ID)         BUCKET_ID="$_val" ;;
-			INFLUXDB_SUPPORT_BUCKET_ID) SUPPORT_BUCKET_ID="$_val" ;;
+			INFLUXDB_ADMIN_TOKEN)         ADMIN_TOKEN="$_val" ;;
+			INFLUXDB_BUCKET_ID)           BUCKET_ID="$_val" ;;
+			INFLUXDB_SUPPORT_BUCKET_ID)   SUPPORT_BUCKET_ID="$_val" ;;
+			INFLUXDB_WRITE_TOKEN)         _WRITE_TOKEN="$_val" ;;
+			INFLUXDB_SUPPORT_WRITE_TOKEN) _SUPPORT_WRITE_TOKEN="$_val" ;;
 		esac
 	done <"$INFLUXDB_META_FILE"
 
@@ -215,6 +225,27 @@ if [[ -f "$INFLUXDB_META_FILE" ]] && [[ -f "$INFLUXDB_OUTPUT" ]]; then
 					log "WARNING: Failed to update retention for bucket $_bid — will retry on next run."
 			fi
 		done
+	fi
+
+	# Reconcile the telegraf output filter template against what's on disk so
+	# namepass/namedrop additions (e.g. "system.*" exclusion) propagate to
+	# existing installations on upgrade. Unlike the first-boot path, telegraf
+	# is likely already running here — writing in place would briefly expose a
+	# truncated file to a concurrent telegraf reload. Generate into a tempfile
+	# on the same filesystem and rename atomically; compare before/after so
+	# the restart only fires when content actually changed.
+	if [[ -n "$_WRITE_TOKEN" && -n "$_SUPPORT_WRITE_TOKEN" ]]; then
+		_tmp_output=$(mktemp "${INFLUXDB_OUTPUT}.XXXXXX")
+		_real_output="$INFLUXDB_OUTPUT"
+		INFLUXDB_OUTPUT="$_tmp_output" write_telegraf_output "$_WRITE_TOKEN" "$_SUPPORT_WRITE_TOKEN"
+		if cmp -s "$_tmp_output" "$_real_output"; then
+			rm -f "$_tmp_output"
+		else
+			chmod --reference="$_real_output" "$_tmp_output" 2>/dev/null || chmod 640 "$_tmp_output"
+			mv "$_tmp_output" "$_real_output"
+			log "Telegraf output filters regenerated from updated template."
+			systemctl restart delphix-telegraf 2>/dev/null || true
+		fi
 	fi
 	exit 0
 fi
