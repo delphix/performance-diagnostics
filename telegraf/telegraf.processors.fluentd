@@ -27,13 +27,16 @@ CPU_MS_PER_PCT  = CPU_SAMPLE_MS * NCPU / 100.0
 BUCKET_NS       = 60 * 1000 * 1000 * 1000
 
 def hist_json(hist):
-    # Encode a {bucket_us: count} dict as a JSON object string.
-    # Sorted keys give deterministic output matching Java's histogram shape.
+    # Encode a {bucket: count} dict as a JSON object string in microseconds.
+    # hist_estat_* le tag values are in NANOSECONDS (from estat's internal histogram);
+    # Java's LocalIoCollector emitted latency buckets in MICROSECONDS. Divide by 1000
+    # to match Java's format. Sorted by numeric bucket value for deterministic output.
     if not hist:
         return ""
     items = []
-    for bkt in sorted(hist.keys()):
-        items.append('"' + bkt + '":' + str(hist[bkt]))
+    for bkt in sorted(hist.keys(), key=lambda x: int(x)):
+        us_bkt = str(int(bkt) // 1000)
+        items.append('"' + us_bkt + '":' + str(hist[bkt]))
     return "{" + ",".join(items) + "}"
 
 def tag_identity(m):
