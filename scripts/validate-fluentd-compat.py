@@ -42,6 +42,59 @@ import sys
 from collections import defaultdict
 
 
+# "Fields {missing} missing from new events" — Java-derived required set.
+MISSING_FIELDS_TRIGGER = (
+    "Fields {missing} missing from new events (Java always has them)"
+)
+MISSING_FIELDS_GUARD = (
+    "Emit the missing fields in the starlark flush block"
+)
+MISSING_FIELDS_RISK = (
+    "Splunk dashboards relying on these fields break"
+)
+
+TYPE_MISMATCH_GUARD = (
+    "Fix numeric type conversion in record_transformer"
+)
+TYPE_MISMATCH_RISK = "Splunk numeric comparisons fail"
+
+HIST_SUM_GUARD = (
+    "Use sum(histogram.values()) as count when histogram present"
+)
+HIST_SUM_RISK = (
+    "Dashboard summaries disagree with histogram breakdowns"
+)
+
+VALUE_COUNT_GUARD = (
+    'Ensure m.fields["count"] matches the tag emission'
+)
+VALUE_COUNT_RISK = (
+    "Splunk _value aggregations diverge from data.count"
+)
+
+SCALE_FIELD_GUARD = (
+    "Verify units match delphix.json for {field} (us vs ns, kB vs B)"
+)
+SCALE_FIELD_RISK = (
+    "Latency alerts, throughput dashboards off by orders of magnitude"
+)
+
+OP_SCALE_GUARD = (
+    "Verify units for {field} match delphix.json "
+    "(avgLatency ns, throughput bytes)"
+)
+OP_SCALE_RISK = (
+    "Latency alerts and throughput dashboards off by orders of magnitude"
+)
+
+HIST_SCALE_GUARD = (
+    "Verify histogram le keys match Java's (nanoseconds per delphix.json)"
+)
+HIST_SCALE_RISK = (
+    "Latency distribution dashboards show the wrong scale"
+)
+
+
 def load(path):
     out = []
     with open(path) as f:
@@ -74,7 +127,6 @@ def derive_java_invariants(java_events_by_metric):
     for metric, events in java_events_by_metric.items():
         inv = {"sample_size": len(events)}
 
-        # fields and types
         field_sets = [frozenset(e.get("data", {}).keys()) for e in events]
         type_examples = defaultdict(set)
         for e in events:
@@ -87,7 +139,6 @@ def derive_java_invariants(java_events_by_metric):
             inv["fields_sometimes"] = sorted(union - common)
         inv["field_types"] = {k: sorted(v) for k, v in type_examples.items()}
 
-        # Counter identities
         if metric.endswith(".ops.count"):
             cnt_eq_hist, val_eq_cnt, cnt_positive = [], [], []
             counts = []
@@ -108,13 +159,18 @@ def derive_java_invariants(java_events_by_metric):
                 val_eq_cnt.append(val == cnt)
                 cnt_positive.append(cnt > 0)
                 counts.append(cnt)
-            inv["count_eq_hist_sum"] = all(cnt_eq_hist) if cnt_eq_hist else None
-            inv["value_eq_count"] = all(val_eq_cnt) if val_eq_cnt else None
-            inv["count_positive"] = all(cnt_positive) if cnt_positive else None
+            inv["count_eq_hist_sum"] = (
+                all(cnt_eq_hist) if cnt_eq_hist else None
+            )
+            inv["value_eq_count"] = (
+                all(val_eq_cnt) if val_eq_cnt else None
+            )
+            inv["count_positive"] = (
+                all(cnt_positive) if cnt_positive else None
+            )
             if counts:
                 inv["count_range"] = (min(counts), max(counts))
 
-        # Byte-summary identity
         if metric.endswith(".bytes"):
             matches = []
             for e in events:
@@ -133,6 +189,198 @@ def derive_java_invariants(java_events_by_metric):
     return out
 
 
+def _check_required_fields(metric, inv, events, findings, checks):
+    required = set(inv["fields_always"])
+    missing = defaultdict(int)
+    for e in events:
+        for f in required - set(e.get("data", {}).keys()):
+            missing[f] += 1
+    if missing:
+        findings.append(dict(
+            lens="adversarial",
+            location=f"{metric}: required fields",
+            trigger_condition=MISSING_FIELDS_TRIGGER.format(
+                missing=dict(missing)),
+            guard_snippet=MISSING_FIELDS_GUARD,
+            potential_consequence=MISSING_FIELDS_RISK,
+        ))
+        checks.append(f"fields: FAIL {dict(missing)}")
+    else:
+        checks.append(
+            f"fields: OK {len(required)} required on all {len(events)}"
+        )
+
+
+def _check_types(metric, inv, events, findings, checks):
+    type_mm = defaultdict(list)
+    for e in events:
+        for k, v in e.get("data", {}).items():
+            allowed = inv.get("field_types", {}).get(k)
+            if allowed and type(v).__name__ not in allowed:
+                type_mm[k].append((type(v).__name__, allowed))
+    if type_mm:
+        for k, cases in type_mm.items():
+            got, want = cases[0][0], cases[0][1]
+            findings.append(dict(
+                lens="adversarial",
+                location=f"{metric}: data.{k}",
+                trigger_condition=(
+                    f"Type mismatch — Java had {want}, "
+                    f"new has {got} in {len(cases)} events"
+                ),
+                guard_snippet=TYPE_MISMATCH_GUARD,
+                potential_consequence=TYPE_MISMATCH_RISK,
+            ))
+        checks.append(f"types: FAIL {list(type_mm.keys())}")
+    else:
+        checks.append(f"types: OK all match on {len(events)} events")
+
+
+def _check_count_hist_sum(metric, events, findings, checks):
+    deltas = []
+    for e in events:
+        d = e.get("data", {})
+        try:
+            cnt = int(d.get("count", 0))
+        except (TypeError, ValueError):
+            cnt = 0
+        lat = d.get("latency", {})
+        if isinstance(lat, dict):
+            deltas.append(cnt - sum(lat.values()))
+    if not deltas:
+        return
+    max_abs = max(abs(d) for d in deltas)
+    failures = sum(1 for d in deltas if d != 0)
+    if failures:
+        findings.append(dict(
+            lens="adversarial",
+            location=f"{metric}: count vs histogram sum",
+            trigger_condition=(
+                f"count != sum(latency.values()) in "
+                f"{failures}/{len(deltas)} events, max delta {max_abs}"
+            ),
+            guard_snippet=HIST_SUM_GUARD,
+            potential_consequence=HIST_SUM_RISK,
+        ))
+        checks.append(
+            f"count=hist_sum: FAIL {failures}/{len(deltas)}, "
+            f"max_delta={max_abs}"
+        )
+    else:
+        checks.append(f"count=hist_sum: EXACT on all {len(deltas)} events")
+
+
+def _check_value_eq_count(metric, events, findings, checks):
+    fails = []
+    for e in events:
+        try:
+            v = int(e.get("_value", 0))
+            c = int(e.get("data", {}).get("count", 0))
+        except (TypeError, ValueError):
+            v, c = 0, 0
+        if v != c:
+            fails.append((v, c))
+    if fails:
+        findings.append(dict(
+            lens="adversarial",
+            location=f"{metric}: _value vs data.count",
+            trigger_condition=(
+                f"_value != data.count in {len(fails)} events: "
+                f"samples {fails[:3]}"
+            ),
+            guard_snippet=VALUE_COUNT_GUARD,
+            potential_consequence=VALUE_COUNT_RISK,
+        ))
+        checks.append(f"_value=count: FAIL {len(fails)} events")
+    else:
+        checks.append(f"_value=count: EXACT on all {len(events)} events")
+
+
+def _check_count_positive(metric, events, findings, checks):
+    zeros = []
+    for e in events:
+        try:
+            cnt = int(e.get("data", {}).get("count", 0) or 0)
+        except (TypeError, ValueError):
+            cnt = 0
+        if cnt == 0:
+            zeros.append(e)
+    if zeros:
+        findings.append(dict(
+            lens="adversarial",
+            location=f"{metric}: zero-count events",
+            trigger_condition=(
+                f"count=0 in {len(zeros)} events; "
+                "Java never emits count=0"
+            ),
+            guard_snippet="Guard emission with if cnt > 0",
+            potential_consequence="Noise in Splunk dashboards",
+        ))
+        checks.append(f"count>0: FAIL {len(zeros)} zero-count events")
+    else:
+        checks.append(
+            f"count>0: OK all {len(events)} events have count > 0"
+        )
+
+
+def _check_bytes_sum(metric, events, findings, checks):
+    fails = []
+    for e in events:
+        d = e.get("data", {})
+        try:
+            v = int(e.get("_value", 0))
+            s = int(d.get("inBytes", 0)) + int(d.get("outBytes", 0))
+        except (TypeError, ValueError):
+            continue
+        if v != s:
+            fails.append((v, s))
+    if fails:
+        findings.append(dict(
+            lens="adversarial",
+            location=f"{metric}: _value vs inBytes+outBytes",
+            trigger_condition=(
+                f"_value != inBytes+outBytes in {len(fails)} events"
+            ),
+            guard_snippet="Fix _value derivation at emission",
+            potential_consequence="Splunk sums wrong",
+        ))
+        checks.append(f"_value=in+out: FAIL {len(fails)} events")
+    else:
+        checks.append(f"_value=in+out: EXACT on all {len(events)} events")
+
+
+def _check_cpu_range(metric, events, findings, checks):
+    fails = []
+    for e in events:
+        try:
+            v = float(e.get("_value", 0))
+        except (TypeError, ValueError):
+            v = -1
+        if not (0 <= v <= 100):
+            fails.append(v)
+    if fails:
+        findings.append(dict(
+            lens="edge-case-hunter",
+            location=f"{metric}: _value range",
+            trigger_condition=(
+                f"CPU pct outside [0,100] in {len(fails)} events"
+            ),
+            guard_snippet="Review pct calculation",
+            potential_consequence="CPU alerts broken",
+        ))
+        checks.append(f"pct_in_0_100: FAIL {len(fails)} events")
+    else:
+        vals = [
+            float(e.get("_value", 0))
+            for e in events
+            if e.get("_value") is not None
+        ]
+        checks.append(
+            f"pct_in_0_100: OK all {len(events)} events, "
+            f"range {min(vals):.1f}-{max(vals):.1f}"
+        )
+
+
 def check_new_events(invariants, new_by_metric):
     """Per-event invariant check with zero tolerance for identities.
 
@@ -145,174 +393,49 @@ def check_new_events(invariants, new_by_metric):
     for metric, inv in invariants.items():
         events = new_by_metric.get(metric, [])
         if not events:
-            lines.append(f"{metric}: no new events (Java had {inv['sample_size']})")
+            lines.append(
+                f"{metric}: no new events "
+                f"(Java had {inv['sample_size']})"
+            )
             continue
-        n = len(events)
         checks = []
 
-        # Required fields
         if inv.get("fields_always"):
-            required = set(inv["fields_always"])
-            missing = defaultdict(int)
-            for e in events:
-                for f in required - set(e.get("data", {}).keys()):
-                    missing[f] += 1
-            if missing:
-                findings.append(dict(
-                    lens="adversarial",
-                    location=f"{metric}: required fields",
-                    trigger_condition=f"Fields {dict(missing)} missing from new events (Java always has them)",
-                    guard_snippet="Emit the missing fields in the starlark flush block",
-                    potential_consequence="Splunk dashboards relying on these fields break",
-                ))
-                checks.append(f"fields: FAIL {dict(missing)}")
-            else:
-                checks.append(f"fields: OK {len(required)} required fields on all {n} events")
+            _check_required_fields(metric, inv, events, findings, checks)
 
-        # Types
-        type_mm = defaultdict(list)
-        for e in events:
-            for k, v in e.get("data", {}).items():
-                allowed = inv.get("field_types", {}).get(k)
-                if allowed and type(v).__name__ not in allowed:
-                    type_mm[k].append((type(v).__name__, allowed))
-        if type_mm:
-            for k, cases in type_mm.items():
-                findings.append(dict(
-                    lens="adversarial",
-                    location=f"{metric}: data.{k}",
-                    trigger_condition=f"Type mismatch — Java had {cases[0][1]}, new has {cases[0][0]} in {len(cases)} events",
-                    guard_snippet="Fix numeric type conversion in record_transformer",
-                    potential_consequence="Splunk numeric comparisons fail",
-                ))
-            checks.append(f"types: FAIL {list(type_mm.keys())}")
-        else:
-            checks.append(f"types: OK all match on {n} events")
+        _check_types(metric, inv, events, findings, checks)
 
-        # Counter identities
         if metric.endswith(".ops.count"):
             if inv.get("count_eq_hist_sum"):
-                deltas = []
-                for e in events:
-                    d = e.get("data", {})
-                    try:
-                        cnt = int(d.get("count", 0))
-                    except (TypeError, ValueError):
-                        cnt = 0
-                    lat = d.get("latency", {})
-                    if isinstance(lat, dict):
-                        deltas.append(cnt - sum(lat.values()))
-                if deltas:
-                    max_abs = max(abs(d) for d in deltas)
-                    failures = sum(1 for d in deltas if d != 0)
-                    if failures:
-                        findings.append(dict(
-                            lens="adversarial",
-                            location=f"{metric}: count vs histogram sum",
-                            trigger_condition=f"count != sum(latency.values()) in {failures}/{len(deltas)} events, max delta {max_abs}",
-                            guard_snippet="Use sum(histogram.values()) as count when histogram present",
-                            potential_consequence="Dashboard summaries disagree with histogram breakdowns",
-                        ))
-                        checks.append(f"count=hist_sum: FAIL {failures}/{len(deltas)}, max_delta={max_abs}")
-                    else:
-                        checks.append(f"count=hist_sum: EXACT on all {len(deltas)} events")
-
+                _check_count_hist_sum(metric, events, findings, checks)
             if inv.get("value_eq_count"):
-                fails = []
-                for e in events:
-                    try:
-                        v = int(e.get("_value", 0))
-                        c = int(e.get("data", {}).get("count", 0))
-                    except (TypeError, ValueError):
-                        v, c = 0, 0
-                    if v != c:
-                        fails.append((v, c))
-                if fails:
-                    findings.append(dict(
-                        lens="adversarial",
-                        location=f"{metric}: _value vs data.count",
-                        trigger_condition=f"_value != data.count in {len(fails)} events: samples {fails[:3]}",
-                        guard_snippet="Ensure m.fields[\"count\"] matches the tag emission",
-                        potential_consequence="Splunk _value aggregations diverge from data.count",
-                    ))
-                    checks.append(f"_value=count: FAIL {len(fails)} events")
-                else:
-                    checks.append(f"_value=count: EXACT on all {n} events")
-
+                _check_value_eq_count(metric, events, findings, checks)
             if inv.get("count_positive"):
-                zeros = [e for e in events if int(e.get("data", {}).get("count", 0) or 0) == 0]
-                if zeros:
-                    findings.append(dict(
-                        lens="adversarial",
-                        location=f"{metric}: zero-count events",
-                        trigger_condition=f"count=0 in {len(zeros)} events; Java never emits count=0",
-                        guard_snippet="Guard emission with if cnt > 0",
-                        potential_consequence="Noise in Splunk dashboards",
-                    ))
-                    checks.append(f"count>0: FAIL {len(zeros)} zero-count events")
-                else:
-                    checks.append(f"count>0: OK all {n} events have count > 0")
+                _check_count_positive(metric, events, findings, checks)
 
-        # Byte-summary identity
-        if metric.endswith(".bytes") and inv.get("value_eq_inBytes_plus_outBytes"):
-            fails = []
-            for e in events:
-                d = e.get("data", {})
-                try:
-                    v = int(e.get("_value", 0))
-                    s = int(d.get("inBytes", 0)) + int(d.get("outBytes", 0))
-                except (TypeError, ValueError):
-                    continue
-                if v != s:
-                    fails.append((v, s))
-            if fails:
-                findings.append(dict(
-                    lens="adversarial",
-                    location=f"{metric}: _value vs inBytes+outBytes",
-                    trigger_condition=f"_value != inBytes+outBytes in {len(fails)} events",
-                    guard_snippet="Fix _value derivation at emission",
-                    potential_consequence="Splunk sums wrong",
-                ))
-                checks.append(f"_value=in+out: FAIL {len(fails)} events")
-            else:
-                checks.append(f"_value=in+out: EXACT on all {n} events")
+        if metric.endswith(".bytes") and inv.get(
+                "value_eq_inBytes_plus_outBytes"):
+            _check_bytes_sum(metric, events, findings, checks)
 
-        # CPU range
         if metric == "system.cpu.util.pct":
-            fails = []
-            for e in events:
-                try:
-                    v = float(e.get("_value", 0))
-                except (TypeError, ValueError):
-                    v = -1
-                if not (0 <= v <= 100):
-                    fails.append(v)
-            if fails:
-                findings.append(dict(
-                    lens="edge-case-hunter",
-                    location=f"{metric}: _value range",
-                    trigger_condition=f"CPU pct outside [0,100] in {len(fails)} events",
-                    guard_snippet="Review pct calculation",
-                    potential_consequence="CPU alerts broken",
-                ))
-                checks.append(f"pct_in_0_100: FAIL {len(fails)} events")
-            else:
-                vals = [float(e.get("_value", 0)) for e in events if e.get("_value") is not None]
-                checks.append(f"pct_in_0_100: OK all {n} events, range {min(vals):.1f}-{max(vals):.1f}")
+            _check_cpu_range(metric, events, findings, checks)
 
-        lines.append(f"{metric} (n={n}): " + "; ".join(checks))
+        lines.append(
+            f"{metric} (n={len(events)}): " + "; ".join(checks)
+        )
 
     return findings, lines
 
 
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # UNIT CROSS-CHECK
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 #
-# The single most dangerous class of defect for this pipeline is a unit error:
-# emitting microseconds where Java sent nanoseconds, or kilobytes where Java
-# sent bytes. These cannot be caught by checking the new path against itself;
-# the only signal is magnitude disagreement with the reference.
+# The single most dangerous class of defect for this pipeline is a unit
+# error: emitting microseconds where Java sent nanoseconds, or kilobytes
+# where Java sent bytes. These cannot be caught by checking the new path
+# against itself; the only signal is magnitude disagreement with the
+# reference.
 #
 # For each (metric, op) pair with events in both indexes, compare the
 # medians of the numeric fields that both carry. A median ratio that falls
@@ -323,10 +446,104 @@ def check_new_events(invariants, new_by_metric):
 # latency on an idle test engine and a production Java engine is expected
 # — a 1000x gap is not. The ratio bounds catch the ns/us and kB/B class of
 # defect without crying wolf on workload differences.
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 SCALE_RATIO_FLOOR = 0.1
 SCALE_RATIO_CEILING = 10.0
+
+
+def _scale_trigger(ratio):
+    return (
+        f"NEW/OLD median ratio {ratio:.4f} outside "
+        f"[{SCALE_RATIO_FLOOR},{SCALE_RATIO_CEILING}] — "
+        "probable unit mismatch"
+    )
+
+
+def _scale_check_field(metric, field, old_events, new_events,
+                       findings, lines):
+    old_vals = _collect_field(old_events, field)
+    new_vals = _collect_field(new_events, field)
+    if not old_vals or not new_vals:
+        lines.append(
+            f"  {field}: skip "
+            f"(old n={len(old_vals)}, new n={len(new_vals)})"
+        )
+        return
+    ro = statistics.median(old_vals)
+    rn = statistics.median(new_vals)
+    if ro == 0 or rn == 0:
+        lines.append(
+            f"  {field}: skip (median is zero: old={ro}, new={rn})"
+        )
+        return
+    ratio = rn / ro
+    verdict = _scale_verdict(ratio)
+    lines.append(
+        f"  {field}: OLD median={ro:.1f}, NEW median={rn:.1f}, "
+        f"ratio={ratio:.3f} ({verdict})"
+    )
+    if verdict == "FAIL":
+        findings.append(dict(
+            lens="adversarial",
+            location=f"{metric}: data.{field}",
+            trigger_condition=_scale_trigger(ratio),
+            guard_snippet=SCALE_FIELD_GUARD.format(field=field),
+            potential_consequence=SCALE_FIELD_RISK,
+        ))
+
+
+def _scale_check_op_field(metric, op, field, old_events, new_events,
+                          findings, lines):
+    old_vals = _collect_field(old_events, field)
+    new_vals = _collect_field(new_events, field)
+    if not old_vals or not new_vals:
+        return
+    ro = statistics.median(old_vals)
+    rn = statistics.median(new_vals)
+    if ro == 0 or rn == 0:
+        return
+    ratio = rn / ro
+    verdict = _scale_verdict(ratio)
+    lines.append(
+        f"  op={op} {field}: OLD median={ro:.1f}, "
+        f"NEW median={rn:.1f}, ratio={ratio:.3f} ({verdict})"
+    )
+    if verdict == "FAIL":
+        findings.append(dict(
+            lens="adversarial",
+            location=f"{metric} op={op}: data.{field}",
+            trigger_condition=_scale_trigger(ratio),
+            guard_snippet=OP_SCALE_GUARD.format(field=field),
+            potential_consequence=OP_SCALE_RISK,
+        ))
+
+
+def _scale_check_hist(metric, op, old_events, new_events, findings, lines):
+    old_bkts = _collect_hist_keys(old_events)
+    new_bkts = _collect_hist_keys(new_events)
+    if not (old_bkts and new_bkts):
+        return
+    ro = statistics.median(old_bkts)
+    rn = statistics.median(new_bkts)
+    if ro == 0 or rn == 0:
+        return
+    ratio = rn / ro
+    verdict = _scale_verdict(ratio)
+    lines.append(
+        f"  op={op} latency bucket keys: "
+        f"OLD median={ro:.0f}, NEW median={rn:.0f}, "
+        f"ratio={ratio:.3f} ({verdict})"
+    )
+    if verdict == "FAIL":
+        findings.append(dict(
+            lens="adversarial",
+            location=f"{metric} op={op}: data.latency bucket keys",
+            trigger_condition=_scale_trigger(ratio),
+            guard_snippet=HIST_SCALE_GUARD,
+            potential_consequence=HIST_SCALE_RISK,
+        ))
+
 
 def unit_cross_check(old_by_metric, new_by_metric):
     """Compare median magnitudes of scale-sensitive fields across indexes.
@@ -336,82 +553,39 @@ def unit_cross_check(old_by_metric, new_by_metric):
     findings = []
     lines = []
 
-    for metric in sorted(set(old_by_metric.keys()) & set(new_by_metric.keys())):
+    shared = sorted(
+        set(old_by_metric.keys()) & set(new_by_metric.keys())
+    )
+    for metric in shared:
         if not metric.endswith(".ops.count"):
-            # Non-counter metrics: compare per-field medians directly.
             scale_fields = _scale_fields_for(metric)
             if not scale_fields:
                 continue
             lines.append(f"\n{metric}")
             for field in scale_fields:
-                old_vals = _collect_field(old_by_metric[metric], field)
-                new_vals = _collect_field(new_by_metric[metric], field)
-                if not old_vals or not new_vals:
-                    lines.append(f"  {field}: skip (old n={len(old_vals)}, new n={len(new_vals)})")
-                    continue
-                ro = statistics.median(old_vals)
-                rn = statistics.median(new_vals)
-                if ro == 0 or rn == 0:
-                    lines.append(f"  {field}: skip (median is zero: old={ro}, new={rn})")
-                    continue
-                ratio = rn / ro
-                verdict = _scale_verdict(ratio)
-                lines.append(f"  {field}: OLD median={ro:.1f}, NEW median={rn:.1f}, ratio={ratio:.3f} ({verdict})")
-                if verdict == "FAIL":
-                    findings.append(dict(
-                        lens="adversarial",
-                        location=f"{metric}: data.{field}",
-                        trigger_condition=f"NEW/OLD median ratio {ratio:.4f} outside [{SCALE_RATIO_FLOOR},{SCALE_RATIO_CEILING}] — probable unit mismatch",
-                        guard_snippet=f"Verify units match delphix.json for {field} (us vs ns, kB vs B)",
-                        potential_consequence="Latency alerts, throughput dashboards off by orders of magnitude",
-                    ))
+                _scale_check_field(
+                    metric, field,
+                    old_by_metric[metric], new_by_metric[metric],
+                    findings, lines,
+                )
             continue
 
-        # Counter metrics: split by op direction so we are comparing like with like.
         old_by_op = _split_by_op(old_by_metric[metric])
         new_by_op = _split_by_op(new_by_metric[metric])
         ops = sorted(set(old_by_op.keys()) & set(new_by_op.keys()))
         lines.append(f"\n{metric}")
         for op in ops:
             for field in ("avgLatency", "throughput"):
-                old_vals = _collect_field(old_by_op[op], field)
-                new_vals = _collect_field(new_by_op[op], field)
-                if not old_vals or not new_vals:
-                    continue
-                ro = statistics.median(old_vals)
-                rn = statistics.median(new_vals)
-                if ro == 0 or rn == 0:
-                    continue
-                ratio = rn / ro
-                verdict = _scale_verdict(ratio)
-                lines.append(f"  op={op} {field}: OLD median={ro:.1f}, NEW median={rn:.1f}, ratio={ratio:.3f} ({verdict})")
-                if verdict == "FAIL":
-                    findings.append(dict(
-                        lens="adversarial",
-                        location=f"{metric} op={op}: data.{field}",
-                        trigger_condition=f"NEW/OLD median ratio {ratio:.4f} outside [{SCALE_RATIO_FLOOR},{SCALE_RATIO_CEILING}] — probable unit mismatch",
-                        guard_snippet=f"Verify units for {field} match delphix.json (avgLatency ns, throughput bytes)",
-                        potential_consequence="Latency alerts and throughput dashboards off by orders of magnitude",
-                    ))
-
-            # Histogram bucket-key scale: compare the median bucket upper bound.
-            old_bkts = _collect_hist_keys(old_by_op[op])
-            new_bkts = _collect_hist_keys(new_by_op[op])
-            if old_bkts and new_bkts:
-                ro = statistics.median(old_bkts)
-                rn = statistics.median(new_bkts)
-                if ro != 0 and rn != 0:
-                    ratio = rn / ro
-                    verdict = _scale_verdict(ratio)
-                    lines.append(f"  op={op} latency bucket keys: OLD median={ro:.0f}, NEW median={rn:.0f}, ratio={ratio:.3f} ({verdict})")
-                    if verdict == "FAIL":
-                        findings.append(dict(
-                            lens="adversarial",
-                            location=f"{metric} op={op}: data.latency bucket keys",
-                            trigger_condition=f"NEW/OLD histogram bucket median ratio {ratio:.4f} outside [{SCALE_RATIO_FLOOR},{SCALE_RATIO_CEILING}] — probable unit mismatch",
-                            guard_snippet="Verify histogram le keys match Java's (nanoseconds per delphix.json)",
-                            potential_consequence="Latency distribution dashboards show the wrong scale",
-                        ))
+                _scale_check_op_field(
+                    metric, op, field,
+                    old_by_op[op], new_by_op[op],
+                    findings, lines,
+                )
+            _scale_check_hist(
+                metric, op,
+                old_by_op[op], new_by_op[op],
+                findings, lines,
+            )
 
     return findings, lines
 
@@ -478,7 +652,11 @@ def main():
     metrics = sorted(set(og.keys()) | set(ng.keys()))
     print("\nMetrics in window:")
     for m in metrics:
-        print(f"  {m:<40} OLD={len(og.get(m,[])):>4}  NEW={len(ng.get(m,[])):>4}")
+        print(
+            f"  {m:<40} "
+            f"OLD={len(og.get(m, [])):>4}  "
+            f"NEW={len(ng.get(m, [])):>4}"
+        )
 
     print("\n=== Java invariants (derived from fold-met) ===")
     invariants = derive_java_invariants(og)
@@ -490,19 +668,24 @@ def main():
             print(f"  fields always: {inv['fields_always']}")
         if inv.get("fields_sometimes"):
             print(f"  fields sometimes: {inv['fields_sometimes']}")
-        for k in ("count_eq_hist_sum", "value_eq_count", "count_positive", "value_eq_inBytes_plus_outBytes"):
+        for k in (
+            "count_eq_hist_sum",
+            "value_eq_count",
+            "count_positive",
+            "value_eq_inBytes_plus_outBytes",
+        ):
             if inv.get(k) is not None:
                 print(f"  {k}: {inv[k]}")
 
     print("\n=== Invariant check (every new event, zero tolerance) ===")
     inv_findings, inv_lines = check_new_events(invariants, ng)
-    for l in inv_lines:
-        print(f"\n{l}")
+    for line in inv_lines:
+        print(f"\n{line}")
 
     print("\n=== Unit cross-check (OLD vs NEW median magnitudes) ===")
     unit_findings, unit_lines = unit_cross_check(og, ng)
-    for l in unit_lines:
-        print(l)
+    for line in unit_lines:
+        print(line)
 
     findings = inv_findings + unit_findings
     print(f"\n=== FINDINGS: {len(findings)} ===")
