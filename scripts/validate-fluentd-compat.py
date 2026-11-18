@@ -32,8 +32,11 @@
 #       [--old /path/to/old_events.jsonl] \
 #       [--new /path/to/new_events.jsonl]
 #
-# Exits non-zero if any invariant check fails against the new events or any
-# unit cross-check flags a probable scaling error (ratio outside [0.1, 10]).
+# Exits non-zero if any invariant check fails against the new events, any unit
+# cross-check flags a probable scaling error (ratio outside [0.1, 10]), or the
+# run had nothing to check: an export that is empty, that holds lines the JSON
+# parser could not read, or that is missing a metric the Java reference has.
+# A run that checked nothing must not look like a clean one.
 
 import argparse
 import json
@@ -72,6 +75,25 @@ VALUE_COUNT_RISK = (
     "Splunk _value aggregations diverge from data.count"
 )
 
+NO_NEW_EVENTS_GUARD = (
+    "Emit {metric} from the starlark flush block, or drop it from the "
+    "reference window"
+)
+NO_NEW_EVENTS_RISK = (
+    "A metric Java published is missing from Splunk entirely"
+)
+
+UNPARSED_GUARD = (
+    "Re-collect the export; a truncated file or a Splunk error page "
+    "reads as zero events"
+)
+UNPARSED_RISK = "An audit that read nothing reports a clean run"
+
+NO_EVENTS_GUARD = (
+    "Check the Splunk query window and the index name"
+)
+NO_EVENTS_RISK = "An audit that compared nothing reports a clean run"
+
 SCALE_FIELD_GUARD = (
     "Verify units match delphix.json for {field} (us vs ns, kB vs B)"
 )
@@ -96,7 +118,14 @@ HIST_SCALE_RISK = (
 
 
 def load(path):
+    """Return (events, count of lines that were not JSON).
+
+    A truncated export or a Splunk error page produces lines the parser
+    cannot read. Dropping them silently is how a run that read nothing comes
+    out looking like a clean one, so the caller gets the count and reports it.
+    """
     out = []
+    unparsed = 0
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -105,8 +134,27 @@ def load(path):
             try:
                 out.append(json.loads(line))
             except json.JSONDecodeError:
-                pass
-    return out
+                unparsed += 1
+    return out, unparsed
+
+
+def as_number(value):
+    """Return value as a float, or None when it is not a number.
+
+    A field that cannot be read as a number is a defect in its own right, so
+    every caller reports it instead of substituting zero and comparing two
+    zeros. bool is excluded because Python counts it as an int.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
 
 
 def group_by_metric(events):
@@ -238,32 +286,36 @@ def _check_types(metric, inv, events, findings, checks):
 
 def _check_count_hist_sum(metric, events, findings, checks):
     deltas = []
+    unreadable = 0
     for e in events:
         d = e.get("data", {})
-        try:
-            cnt = int(d.get("count", 0))
-        except (TypeError, ValueError):
-            cnt = 0
         lat = d.get("latency", {})
-        if isinstance(lat, dict):
-            deltas.append(cnt - sum(lat.values()))
-    if not deltas:
+        if not isinstance(lat, dict):
+            continue
+        cnt = as_number(d.get("count"))
+        hist = [as_number(v) for v in lat.values()]
+        if cnt is None or None in hist:
+            unreadable += 1
+            continue
+        deltas.append(cnt - sum(hist))
+    if not deltas and not unreadable:
         return
-    max_abs = max(abs(d) for d in deltas)
-    failures = sum(1 for d in deltas if d != 0)
+    max_abs = max([abs(d) for d in deltas] or [0])
+    failures = sum(1 for d in deltas if d != 0) + unreadable
     if failures:
         findings.append(dict(
             lens="adversarial",
             location=f"{metric}: count vs histogram sum",
             trigger_condition=(
                 f"count != sum(latency.values()) in "
-                f"{failures}/{len(deltas)} events, max delta {max_abs}"
+                f"{failures}/{len(deltas) + unreadable} events "
+                f"({unreadable} unreadable), max delta {max_abs}"
             ),
             guard_snippet=HIST_SUM_GUARD,
             potential_consequence=HIST_SUM_RISK,
         ))
         checks.append(
-            f"count=hist_sum: FAIL {failures}/{len(deltas)}, "
+            f"count=hist_sum: FAIL {failures}/{len(deltas) + unreadable}, "
             f"max_delta={max_abs}"
         )
     else:
@@ -273,20 +325,19 @@ def _check_count_hist_sum(metric, events, findings, checks):
 def _check_value_eq_count(metric, events, findings, checks):
     fails = []
     for e in events:
-        try:
-            v = int(e.get("_value", 0))
-            c = int(e.get("data", {}).get("count", 0))
-        except (TypeError, ValueError):
-            v, c = 0, 0
-        if v != c:
-            fails.append((v, c))
+        raw_v = e.get("_value")
+        raw_c = e.get("data", {}).get("count")
+        v = as_number(raw_v)
+        c = as_number(raw_c)
+        if v is None or c is None or v != c:
+            fails.append((raw_v, raw_c))
     if fails:
         findings.append(dict(
             lens="adversarial",
             location=f"{metric}: _value vs data.count",
             trigger_condition=(
-                f"_value != data.count in {len(fails)} events: "
-                f"samples {fails[:3]}"
+                f"_value != data.count, or either is not a number, in "
+                f"{len(fails)} events: samples {fails[:3]}"
             ),
             guard_snippet=VALUE_COUNT_GUARD,
             potential_consequence=VALUE_COUNT_RISK,
@@ -297,26 +348,25 @@ def _check_value_eq_count(metric, events, findings, checks):
 
 
 def _check_count_positive(metric, events, findings, checks):
-    zeros = []
+    bad = []
     for e in events:
-        try:
-            cnt = int(e.get("data", {}).get("count", 0) or 0)
-        except (TypeError, ValueError):
-            cnt = 0
-        if cnt == 0:
-            zeros.append(e)
-    if zeros:
+        raw = e.get("data", {}).get("count")
+        cnt = as_number(raw)
+        if cnt is None or cnt <= 0:
+            bad.append(raw)
+    if bad:
         findings.append(dict(
             lens="adversarial",
-            location=f"{metric}: zero-count events",
+            location=f"{metric}: non-positive count",
             trigger_condition=(
-                f"count=0 in {len(zeros)} events; "
-                "Java never emits count=0"
+                f"count is not a positive number in {len(bad)} events: "
+                f"samples {bad[:3]}; Java only emits an event for an "
+                "op it counted"
             ),
             guard_snippet="Guard emission with if cnt > 0",
             potential_consequence="Noise in Splunk dashboards",
         ))
-        checks.append(f"count>0: FAIL {len(zeros)} zero-count events")
+        checks.append(f"count>0: FAIL {len(bad)} events")
     else:
         checks.append(
             f"count>0: OK all {len(events)} events have count > 0"
@@ -327,19 +377,19 @@ def _check_bytes_sum(metric, events, findings, checks):
     fails = []
     for e in events:
         d = e.get("data", {})
-        try:
-            v = int(e.get("_value", 0))
-            s = int(d.get("inBytes", 0)) + int(d.get("outBytes", 0))
-        except (TypeError, ValueError):
-            continue
-        if v != s:
-            fails.append((v, s))
+        v = as_number(e.get("_value"))
+        inb = as_number(d.get("inBytes"))
+        outb = as_number(d.get("outBytes"))
+        if v is None or inb is None or outb is None or v != inb + outb:
+            fails.append(
+                (e.get("_value"), d.get("inBytes"), d.get("outBytes")))
     if fails:
         findings.append(dict(
             lens="adversarial",
             location=f"{metric}: _value vs inBytes+outBytes",
             trigger_condition=(
-                f"_value != inBytes+outBytes in {len(fails)} events"
+                f"_value != inBytes+outBytes, or one of them is not a "
+                f"number, in {len(fails)} events: samples {fails[:3]}"
             ),
             guard_snippet="Fix _value derivation at emission",
             potential_consequence="Splunk sums wrong",
@@ -393,8 +443,18 @@ def check_new_events(invariants, new_by_metric):
     for metric, inv in invariants.items():
         events = new_by_metric.get(metric, [])
         if not events:
+            findings.append(dict(
+                lens="adversarial",
+                location=f"{metric}: no new events",
+                trigger_condition=(
+                    f"Java published {inv['sample_size']} events for "
+                    f"{metric} in this window; the new path published none"
+                ),
+                guard_snippet=NO_NEW_EVENTS_GUARD.format(metric=metric),
+                potential_consequence=NO_NEW_EVENTS_RISK,
+            ))
             lines.append(
-                f"{metric}: no new events "
+                f"{metric}: FAIL no new events "
                 f"(Java had {inv['sample_size']})"
             )
             continue
@@ -590,7 +650,23 @@ def unit_cross_check(old_by_metric, new_by_metric):
     return findings, lines
 
 
+# The six instantaneous gauges on system.tcp.total.bytes carry a scale of
+# their own, independent of inBytes/outBytes: Java's minute datapoint sums its
+# one-second per-connection means. They need the same magnitude comparison the
+# latency and throughput fields get.
+TCP_GAUGE_FIELDS = [
+    "unacknowledgedBytes",
+    "unsentBytes",
+    "sendWindowSize",
+    "congestionWindowSize",
+    "receiveWindowSize",
+    "roundTripTime",
+]
+
+
 def _scale_fields_for(metric):
+    if metric == "system.tcp.total.bytes":
+        return ["inBytes", "outBytes"] + TCP_GAUGE_FIELDS
     if metric.endswith(".bytes"):
         return ["inBytes", "outBytes"]
     return []
@@ -643,9 +719,36 @@ def main():
     ap.add_argument("--findings-out", default="/tmp/review_findings.json")
     args = ap.parse_args()
 
-    old = load(args.old)
-    new = load(args.new)
-    print(f"OLD events: {len(old)}  NEW events: {len(new)}")
+    old, old_unparsed = load(args.old)
+    new, new_unparsed = load(args.new)
+    print(
+        f"OLD events: {len(old)} ({old_unparsed} unparseable)  "
+        f"NEW events: {len(new)} ({new_unparsed} unparseable)"
+    )
+
+    input_findings = []
+    for label, path, events, unparsed in (
+        ("OLD (fold-met)", args.old, old, old_unparsed),
+        ("NEW (fluentd-met)", args.new, new, new_unparsed),
+    ):
+        if unparsed:
+            input_findings.append(dict(
+                lens="adversarial",
+                location=f"{label}: {path}",
+                trigger_condition=(
+                    f"{unparsed} lines could not be parsed as JSON"
+                ),
+                guard_snippet=UNPARSED_GUARD,
+                potential_consequence=UNPARSED_RISK,
+            ))
+        if not events:
+            input_findings.append(dict(
+                lens="adversarial",
+                location=f"{label}: {path}",
+                trigger_condition="No events to compare",
+                guard_snippet=NO_EVENTS_GUARD,
+                potential_consequence=NO_EVENTS_RISK,
+            ))
 
     og = group_by_metric(old)
     ng = group_by_metric(new)
@@ -687,7 +790,7 @@ def main():
     for line in unit_lines:
         print(line)
 
-    findings = inv_findings + unit_findings
+    findings = input_findings + inv_findings + unit_findings
     print(f"\n=== FINDINGS: {len(findings)} ===")
     for f in findings:
         print(f"\n  [{f['lens']}] {f['location']}")
