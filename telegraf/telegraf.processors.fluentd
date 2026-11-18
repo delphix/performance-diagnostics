@@ -337,33 +337,73 @@ def apply(metric):
         state["dsk_d_wt"] = state.get("dsk_d_wt", 0.0) + float(d_wt)
         return out
 
-    # system.tcp.total.bytes — data.* carries true per-bucket deltas only.
-    # swnd/cwnd/rwnd/rtt/connections were dropped: they were last-write-wins
-    # across endpoints, so the emitted value reflected whichever connection
-    # happened to be processed last in the bucket rather than any meaningful
-    # aggregate. Per-endpoint window/rtt would require per-endpoint events,
-    # which is out of scope for the aggregated system.tcp.total.bytes metric.
+    # system.tcp.total.bytes — one event per (laddr, raddr, service) per bucket,
+    # matching LocalTCPStatsCollector which aggregates by service and emits one
+    # datapoint per (laddr, raddr, service) group (BY_SERVICE compare mode).
+    # connstat-stats.sh already does this same aggregation (line 7: "mirrors the
+    # aggregation done by LocalTCPStatsCollector"), so Telegraf receives one
+    # tcp_stats metric per key — not one per connection.
+    #
+    # Cumulative fields (inbytes, outbytes, retranssegs, suna, unsent) are summed
+    # across the 60s bucket via cumulative_delta. Instantaneous fields (swnd, cwnd,
+    # rwnd, rtt) are already averaged across connections by connstat; we store the
+    # last value seen in the bucket (matches Java's representative-connection approach).
     if name == "tcp_stats":
-        key  = metric.tags.get("laddr", "") + "|" + metric.tags.get("raddr", "") + "|" + metric.tags.get("service", "")
-        inb  = int(metric.fields.get("inbytes",  0))
-        outb = int(metric.fields.get("outbytes", 0))
-        rseg = int(metric.fields.get("retranssegs", 0))
+        laddr   = metric.tags.get("laddr",   "")
+        raddr   = metric.tags.get("raddr",   "")
+        service = metric.tags.get("service", "")
+        key     = laddr + "|" + raddr + "|" + service
+        inb     = int(metric.fields.get("inbytes",     0))
+        outb    = int(metric.fields.get("outbytes",    0))
+        rseg    = int(metric.fields.get("retranssegs", 0))
+        suna    = int(metric.fields.get("suna",        0))
+        unsent  = int(metric.fields.get("unsent",      0))
+        swnd    = int(metric.fields.get("swnd",        0))
+        cwnd    = int(metric.fields.get("cwnd",        0))
+        rwnd    = int(metric.fields.get("rwnd",        0))
+        rtt     = int(metric.fields.get("rtt",         0))
         d_in  = cumulative_delta("tcp_in_"  + key, inb)
         d_out = cumulative_delta("tcp_out_" + key, outb)
         d_rs  = cumulative_delta("tcp_rs_"  + key, rseg)
+        d_su  = cumulative_delta("tcp_su_"  + key, suna)
+        d_un  = cumulative_delta("tcp_un_"  + key, unsent)
+        bk          = "tcp_bk_" + key
+        prev_bucket = state.get(bk, None)
         out = [metric]
-        out = out + flush_counter("tcp", "system.tcp.total", "bytes", bucket)
-        if len(out) > 1:
-            out[1].tags["data.inBytes"]           = str(int(state.get("tcp_d_in",  0.0)))
-            out[1].tags["data.outBytes"]          = str(int(state.get("tcp_d_out", 0.0)))
-            out[1].tags["data.retransmittedSegs"] = str(int(state.get("tcp_d_rs",  0.0)))
-            state["tcp_d_in"]  = 0.0
-            state["tcp_d_out"] = 0.0
-            state["tcp_d_rs"]  = 0.0
-        state["tcp_acc"]   = state.get("tcp_acc",   0.0) + float(d_in + d_out)
-        state["tcp_d_in"]  = state.get("tcp_d_in",  0.0) + float(d_in)
-        state["tcp_d_out"] = state.get("tcp_d_out", 0.0) + float(d_out)
-        state["tcp_d_rs"]  = state.get("tcp_d_rs",  0.0) + float(d_rs)
+        if prev_bucket != None and prev_bucket != bucket:
+            in_b  = state.get("tcp_in2_"  + key, 0.0)
+            out_b = state.get("tcp_out2_" + key, 0.0)
+            m = Metric("system.tcp.total")
+            m.time = prev_bucket * BUCKET_NS
+            m.fields["bytes"] = int(in_b + out_b)
+            out.append(tag_identity(m))
+            out[1].tags["data.localAddress"]        = laddr
+            out[1].tags["data.remoteAddress"]       = raddr
+            out[1].tags["data.service"]             = service
+            out[1].tags["data.inBytes"]             = str(int(in_b))
+            out[1].tags["data.outBytes"]            = str(int(out_b))
+            out[1].tags["data.retransmittedSegs"]   = str(int(state.get("tcp_rs2_" + key, 0.0)))
+            out[1].tags["data.unacknowledgedBytes"] = str(int(state.get("tcp_su2_" + key, 0.0)))
+            out[1].tags["data.unsentBytes"]         = str(int(state.get("tcp_un2_" + key, 0.0)))
+            out[1].tags["data.sendWindowSize"]      = str(state.get("tcp_sw_"  + key, 0))
+            out[1].tags["data.congestionWindowSize"]= str(state.get("tcp_cw_"  + key, 0))
+            out[1].tags["data.receiveWindowSize"]   = str(state.get("tcp_rw_"  + key, 0))
+            out[1].tags["data.roundTripTime"]       = str(state.get("tcp_rt_"  + key, 0))
+            state["tcp_in2_"  + key] = 0.0
+            state["tcp_out2_" + key] = 0.0
+            state["tcp_rs2_"  + key] = 0.0
+            state["tcp_su2_"  + key] = 0.0
+            state["tcp_un2_"  + key] = 0.0
+        state[bk]                 = bucket
+        state["tcp_in2_"  + key]  = state.get("tcp_in2_"  + key, 0.0) + float(d_in)
+        state["tcp_out2_" + key]  = state.get("tcp_out2_" + key, 0.0) + float(d_out)
+        state["tcp_rs2_"  + key]  = state.get("tcp_rs2_"  + key, 0.0) + float(d_rs)
+        state["tcp_su2_"  + key]  = state.get("tcp_su2_"  + key, 0.0) + float(d_su)
+        state["tcp_un2_"  + key]  = state.get("tcp_un2_"  + key, 0.0) + float(d_un)
+        state["tcp_sw_"   + key]  = swnd
+        state["tcp_cw_"   + key]  = cwnd
+        state["tcp_rw_"   + key]  = rwnd
+        state["tcp_rt_"   + key]  = rtt
         return out
 
     return [metric]
