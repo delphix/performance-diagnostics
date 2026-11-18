@@ -73,41 +73,18 @@ def apply(metric):
   name_prefix = "hist_"
   namepass = ["estat_*"]
 
-# Copy microseconds from estat_backend-io to a separate _ms_hist field before
-# the order=2 drop so the fluentd compat starlark (order=4) can build the
-# data.latency histogram. Only estat_backend-io needs this — NFS and iSCSI
-# don't emit compat latency histograms. All other estat_* are unaffected.
-[[processors.starlark]]
-  order = 1
-  namepass = ["estat_backend-io"]
-  source = '''
-def apply(metric):
-    ms = metric.fields.get("microseconds", None)
-    if ms != None:
-        metric.fields["_ms_hist"] = ms
-    return metric
-'''
-
 # Drop microseconds from all original estat_* measurements after cloning.
 # Covers both storage_io (estat_nfs/iscsi/backend-io) and playbook
-# (estat_zpl/zvol/zio/etc) measurements in one place — unchanged from original.
+# (estat_zpl/zvol/zio/etc) measurements in one place.
+# Uses starlark (not processors.strings) because fieldexclude in
+# processors.strings only filters which fields string transforms run on —
+# it does not remove fields from the metric.
 [[processors.starlark]]
   order = 2
   namepass = ["estat_*"]
   source = '''
 def apply(metric):
     metric.fields.pop("microseconds", None)
-    return metric
-'''
-
-# Clean up _ms_hist from estat_backend-io after the fluentd processor (order=4)
-# has consumed it. Prevents the raw histogram string from reaching InfluxDB.
-[[processors.starlark]]
-  order = 5
-  namepass = ["estat_backend-io"]
-  source = '''
-def apply(metric):
-    metric.fields.pop("_ms_hist", None)
     return metric
 '''
 

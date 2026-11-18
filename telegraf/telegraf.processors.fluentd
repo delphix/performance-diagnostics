@@ -10,7 +10,7 @@
 #
 # Included by delphix-telegraf-service when FLUENTD_ENABLED flag exists.
 [[processors.starlark]]
-  namepass = ["cpu", "estat_backend-io", "net", "estat_nfs", "estat_iscsi", "tcp_stats"]
+  namepass = ["cpu", "estat_backend-io", "hist_estat_backend-io", "net", "estat_nfs", "hist_estat_nfs", "estat_iscsi", "hist_estat_iscsi", "tcp_stats"]
   # Run after the base-config storage_io processors (order 1-3): the name=total
   # row filter must execute first, otherwise read + write + total rows all land
   # in our accumulators and NFS/iSCSI ops counts come out doubled.
@@ -25,6 +25,16 @@ NCPU            = int("${DELPHIX_NCPU}")
 CPU_SAMPLE_MS   = 10000
 CPU_MS_PER_PCT  = CPU_SAMPLE_MS * NCPU / 100.0
 BUCKET_NS       = 60 * 1000 * 1000 * 1000
+
+def hist_json(hist):
+    # Encode a {bucket_us: count} dict as a JSON object string.
+    # Sorted keys give deterministic output matching Java's histogram shape.
+    if not hist:
+        return ""
+    items = []
+    for bkt in sorted(hist.keys()):
+        items.append('"' + bkt + '":' + str(hist[bkt]))
+    return "{" + ",".join(items) + "}"
 
 def tag_identity(m):
     m.tags["systemUniqueId"] = UUID
@@ -181,6 +191,9 @@ def apply(metric):
             out[1].tags["data.count"]      = str(int(r_cnt))
             out[1].tags["data.avgLatency"] = str(r_avg)
             out[1].tags["data.throughput"] = str(int(state.get("nfs_rt", 0.0)))
+            r_lt_json = hist_json(state.get("nfs_hist_read", {}))
+            if r_lt_json:
+                out[1].tags["data.latency"] = r_lt_json
             mw = Metric("system.nfs.ops")
             mw.time = prev_bucket * BUCKET_NS
             mw.fields["count"] = int(w_cnt)
@@ -189,14 +202,19 @@ def apply(metric):
             out[2].tags["data.count"]      = str(int(w_cnt))
             out[2].tags["data.avgLatency"] = str(w_avg)
             out[2].tags["data.throughput"] = str(int(state.get("nfs_wt", 0.0)))
-            state["nfs_d_r"]    = 0.0
-            state["nfs_d_w"]    = 0.0
-            state["nfs_rt"]     = 0.0
-            state["nfs_wt"]     = 0.0
-            state["nfs_rl_sum"] = 0.0
-            state["nfs_wl_sum"] = 0.0
-            state["nfs_rl_w"]   = 0.0
-            state["nfs_wl_w"]   = 0.0
+            w_lt_json = hist_json(state.get("nfs_hist_write", {}))
+            if w_lt_json:
+                out[2].tags["data.latency"] = w_lt_json
+            state["nfs_d_r"]       = 0.0
+            state["nfs_d_w"]       = 0.0
+            state["nfs_rt"]        = 0.0
+            state["nfs_wt"]        = 0.0
+            state["nfs_rl_sum"]    = 0.0
+            state["nfs_wl_sum"]    = 0.0
+            state["nfs_rl_w"]      = 0.0
+            state["nfs_wl_w"]      = 0.0
+            state["nfs_hist_read"] = {}
+            state["nfs_hist_write"]= {}
         state["nfs_bk"] = bucket
         if direction == "read":
             w = iops if iops > 0 else 1.0
@@ -238,6 +256,9 @@ def apply(metric):
             out[1].tags["data.count"]      = str(int(r_cnt))
             out[1].tags["data.avgLatency"] = str(r_avg)
             out[1].tags["data.throughput"] = str(int(state.get("isc_rt", 0.0)))
+            r_lt_json = hist_json(state.get("isc_hist_read", {}))
+            if r_lt_json:
+                out[1].tags["data.latency"] = r_lt_json
             mw = Metric("system.iscsi.ops")
             mw.time = prev_bucket * BUCKET_NS
             mw.fields["count"] = int(w_cnt)
@@ -246,14 +267,19 @@ def apply(metric):
             out[2].tags["data.count"]      = str(int(w_cnt))
             out[2].tags["data.avgLatency"] = str(w_avg)
             out[2].tags["data.throughput"] = str(int(state.get("isc_wt", 0.0)))
-            state["isc_d_r"]    = 0.0
-            state["isc_d_w"]    = 0.0
-            state["isc_rt"]     = 0.0
-            state["isc_wt"]     = 0.0
-            state["isc_rl_sum"] = 0.0
-            state["isc_wl_sum"] = 0.0
-            state["isc_rl_w"]   = 0.0
-            state["isc_wl_w"]   = 0.0
+            w_lt_json = hist_json(state.get("isc_hist_write", {}))
+            if w_lt_json:
+                out[2].tags["data.latency"] = w_lt_json
+            state["isc_d_r"]       = 0.0
+            state["isc_d_w"]       = 0.0
+            state["isc_rt"]        = 0.0
+            state["isc_wt"]        = 0.0
+            state["isc_rl_sum"]    = 0.0
+            state["isc_wl_sum"]    = 0.0
+            state["isc_rl_w"]      = 0.0
+            state["isc_wl_w"]      = 0.0
+            state["isc_hist_read"] = {}
+            state["isc_hist_write"]= {}
         state["isc_bk"] = bucket
         if direction == "read":
             w = iops if iops > 0 else 1.0
@@ -311,15 +337,10 @@ def apply(metric):
         return out
 
     # system.disk.ops.count — sourced from estat_backend-io (BPF tracing), matching
-    # Java's LocalIoCollector which used TracingDataCollector("io") — the same BPF
-    # source. diskio (/proc/diskstats) was the wrong source: it had no op dimension,
-    # no avgLatency, no throughput, and no latency histogram.
-    # estat_backend-io uses the "name" tag for op direction ("read ", "write ") and
-    # is engine-wide (no per-device breakdown). iops(/s) and throughput(k/s) are
-    # per-second rates — multiply by 10 to get per-sample totals, then accumulate.
-    # microseconds is kept on estat_backend-io until order=5 (telegraf.inputs.storage_io
-    # was changed to drop it after us), so we can accumulate per-bucket histogram
-    # counts and emit data.latency as a JSON object matching Java's histogram shape.
+    # Java's LocalIoCollector which used TracingDataCollector("io"). estat_backend-io
+    # uses the "name" tag for op direction ("read ", "write ") and is engine-wide.
+    # Latency histogram is accumulated from hist_estat_backend-io per-bucket rows
+    # (see handler below) into state["dsk_hist_{op}"] before flush.
     if name == "estat_backend-io":
         if "iops(/s)" not in metric.fields:
             return [metric]
@@ -327,7 +348,6 @@ def apply(metric):
         iops       = float(metric.fields["iops(/s)"]) * 10.0
         latency    = float(metric.fields.get("avg latency(us)", 0))
         throughput = float(metric.fields.get("throughput(k/s)", 0)) * 10.0
-        ms_str     = metric.fields.get("_ms_hist", None)
         key        = op
         bk         = "dsk_bk_" + key
         prev_bucket = state.get(bk, None)
@@ -344,13 +364,9 @@ def apply(metric):
             out[1].tags["data.count"]       = str(int(cnt))
             out[1].tags["data.avgLatency"]  = str(avg_lt)
             out[1].tags["data.throughput"]  = str(int(state.get("dsk_tp_" + key, 0.0)))
-            # Build data.latency JSON from accumulated histogram bucket counts.
-            hist = state.get("dsk_hist_" + key, {})
-            if hist:
-                items = []
-                for bkt in sorted(hist.keys()):
-                    items.append('"' + bkt + '":' + str(hist[bkt]))
-                out[1].tags["data.latency"] = "{" + ",".join(items) + "}"
+            lt_json = hist_json(state.get("dsk_hist_" + key, {}))
+            if lt_json:
+                out[1].tags["data.latency"] = lt_json
             state["dsk_cnt_"  + key] = 0.0
             state["dsk_tp_"   + key] = 0.0
             state["dsk_lt_w_" + key] = 0.0
@@ -359,16 +375,44 @@ def apply(metric):
         state["dsk_cnt_"  + key]  = state.get("dsk_cnt_"  + key, 0.0) + iops
         state["dsk_tp_"   + key]  = state.get("dsk_tp_"   + key, 0.0) + throughput
         state["dsk_lt_w_" + key]  = state.get("dsk_lt_w_" + key, 0.0) + latency * iops
-        # Accumulate per-bucket histogram: sum counts across the 60s bucket's 10s samples.
-        if ms_str != None and len(ms_str) > 4:
-            hist = state.get("dsk_hist_" + key, {})
-            for pair in ms_str[1:-1].split("},{"):
-                parts = pair.split(",")
-                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                    bkt = parts[0]
-                    hist[bkt] = hist.get(bkt, 0) + int(parts[1])
-            state["dsk_hist_" + key] = hist
         return out
+
+    # Accumulate disk latency histogram from expanded hist_estat_backend-io rows.
+    # order=3 expands each microseconds string into one metric per bucket (le tag).
+    # We sum counts across all 10s samples in the 60s bucket per op direction.
+    if name == "hist_estat_backend-io":
+        op  = metric.tags.get("name", "").strip()
+        bkt = metric.tags.get("le", "")
+        cnt = int(metric.fields.get("count", 0))
+        if op and bkt and cnt > 0:
+            hist = state.get("dsk_hist_" + op, {})
+            hist[bkt] = hist.get(bkt, 0) + cnt
+            state["dsk_hist_" + op] = hist
+        return [metric]
+
+    # Accumulate NFS latency histogram from hist_estat_nfs per-bucket rows.
+    if name == "hist_estat_nfs":
+        direction = metric.tags.get("name", "").split("/")[-1]
+        bkt       = metric.tags.get("le", "")
+        cnt       = int(metric.fields.get("count", 0))
+        if direction and bkt and cnt > 0:
+            key  = "nfs_hist_" + direction
+            hist = state.get(key, {})
+            hist[bkt] = hist.get(bkt, 0) + cnt
+            state[key] = hist
+        return [metric]
+
+    # Accumulate iSCSI latency histogram from hist_estat_iscsi per-bucket rows.
+    if name == "hist_estat_iscsi":
+        direction = metric.tags.get("name", "").strip()
+        bkt       = metric.tags.get("le", "")
+        cnt       = int(metric.fields.get("count", 0))
+        if direction and bkt and cnt > 0:
+            key  = "isc_hist_" + direction
+            hist = state.get(key, {})
+            hist[bkt] = hist.get(bkt, 0) + cnt
+            state[key] = hist
+        return [metric]
 
     # system.tcp.total.bytes — one event per (laddr, raddr, service) per bucket,
     # matching LocalTCPStatsCollector which aggregates by service and emits one
