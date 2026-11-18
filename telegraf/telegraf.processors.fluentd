@@ -188,28 +188,36 @@ def apply(metric):
             w_avg  = int(state.get("nfs_wl_sum", 0.0) / w_lt_w) if w_lt_w > 0 else 0
             r_hist = state.get("nfs_hist_read",  {})
             w_hist = state.get("nfs_hist_write", {})
-            # Only emit if there were actual ops (count>0) or the histogram has
-            # data (ops happened but bcchelper floored iops to 0). Matches Java
-            # which never emits zero-count events with no histogram.
-            if int(r_cnt) > 0:
+            r_hist_cnt = 0
+            for bv in r_hist.values():
+                r_hist_cnt = r_hist_cnt + bv
+            w_hist_cnt = 0
+            for bv in w_hist.values():
+                w_hist_cnt = w_hist_cnt + bv
+            # Prefer histogram sum as authoritative count (matches Java —
+            # histogram sum always equals count exactly). Falls back to the
+            # iops-derived (bcchelper-floored) count when no histogram.
+            r_emit = r_hist_cnt if r_hist_cnt > 0 else int(r_cnt)
+            w_emit = w_hist_cnt if w_hist_cnt > 0 else int(w_cnt)
+            if r_emit > 0:
                 mr = Metric("system.nfs.ops")
                 mr.time = prev_bucket * BUCKET_NS
-                mr.fields["count"] = int(r_cnt)
+                mr.fields["count"] = r_emit
                 out.append(tag_identity(mr))
                 out[-1].tags["data.op"]         = "read"
-                out[-1].tags["data.count"]      = str(int(r_cnt))
+                out[-1].tags["data.count"]      = str(r_emit)
                 out[-1].tags["data.avgLatency"] = str(r_avg)
                 out[-1].tags["data.throughput"] = str(int(state.get("nfs_rt", 0.0)))
                 r_lt_json = hist_json(r_hist)
                 if r_lt_json:
                     out[-1].tags["data.latency"] = r_lt_json
-            if int(w_cnt) > 0:
+            if w_emit > 0:
                 mw = Metric("system.nfs.ops")
                 mw.time = prev_bucket * BUCKET_NS
-                mw.fields["count"] = int(w_cnt)
+                mw.fields["count"] = w_emit
                 out.append(tag_identity(mw))
                 out[-1].tags["data.op"]         = "write"
-                out[-1].tags["data.count"]      = str(int(w_cnt))
+                out[-1].tags["data.count"]      = str(w_emit)
                 out[-1].tags["data.avgLatency"] = str(w_avg)
                 out[-1].tags["data.throughput"] = str(int(state.get("nfs_wt", 0.0)))
                 w_lt_json = hist_json(w_hist)
@@ -260,25 +268,34 @@ def apply(metric):
             w_avg  = int(state.get("isc_wl_sum", 0.0) / w_lt_w) if w_lt_w > 0 else 0
             r_hist = state.get("isc_hist_read",  {})
             w_hist = state.get("isc_hist_write", {})
-            if int(r_cnt) > 0:
+            r_hist_cnt = 0
+            for bv in r_hist.values():
+                r_hist_cnt = r_hist_cnt + bv
+            w_hist_cnt = 0
+            for bv in w_hist.values():
+                w_hist_cnt = w_hist_cnt + bv
+            # Prefer histogram sum as authoritative count (matches Java).
+            r_emit = r_hist_cnt if r_hist_cnt > 0 else int(r_cnt)
+            w_emit = w_hist_cnt if w_hist_cnt > 0 else int(w_cnt)
+            if r_emit > 0:
                 mr = Metric("system.iscsi.ops")
                 mr.time = prev_bucket * BUCKET_NS
-                mr.fields["count"] = int(r_cnt)
+                mr.fields["count"] = r_emit
                 out.append(tag_identity(mr))
                 out[-1].tags["data.op"]         = "read"
-                out[-1].tags["data.count"]      = str(int(r_cnt))
+                out[-1].tags["data.count"]      = str(r_emit)
                 out[-1].tags["data.avgLatency"] = str(r_avg)
                 out[-1].tags["data.throughput"] = str(int(state.get("isc_rt", 0.0)))
                 r_lt_json = hist_json(r_hist)
                 if r_lt_json:
                     out[-1].tags["data.latency"] = r_lt_json
-            if int(w_cnt) > 0:
+            if w_emit > 0:
                 mw = Metric("system.iscsi.ops")
                 mw.time = prev_bucket * BUCKET_NS
-                mw.fields["count"] = int(w_cnt)
+                mw.fields["count"] = w_emit
                 out.append(tag_identity(mw))
                 out[-1].tags["data.op"]         = "write"
-                out[-1].tags["data.count"]      = str(int(w_cnt))
+                out[-1].tags["data.count"]      = str(w_emit)
                 out[-1].tags["data.avgLatency"] = str(w_avg)
                 out[-1].tags["data.throughput"] = str(int(state.get("isc_wt", 0.0)))
                 w_lt_json = hist_json(w_hist)
@@ -371,13 +388,22 @@ def apply(metric):
             dsk_lt = state.get("dsk_lt_w_" + key, 0.0)
             avg_lt = int(dsk_lt / cnt) if cnt > 0 else 0
             d_hist = state.get("dsk_hist_" + key, {})
-            if int(cnt) > 0:
+            # Prefer the histogram sum as the authoritative count when a
+            # histogram is present — matches Java, which always used raw
+            # per-op counts so count == sum(latency buckets) exactly.
+            # Falls back to the iops-derived (bcchelper-floored) count when
+            # the histogram is empty.
+            hist_cnt = 0
+            for bv in d_hist.values():
+                hist_cnt = hist_cnt + bv
+            emit_cnt = hist_cnt if hist_cnt > 0 else int(cnt)
+            if emit_cnt > 0:
               m = Metric("system.disk.ops")
               m.time = prev_bucket * BUCKET_NS
-              m.fields["count"] = int(cnt)
+              m.fields["count"] = emit_cnt
               out.append(tag_identity(m))
               out[-1].tags["data.op"]          = op
-              out[-1].tags["data.count"]       = str(int(cnt))
+              out[-1].tags["data.count"]       = str(emit_cnt)
               out[-1].tags["data.avgLatency"]  = str(avg_lt)
               out[-1].tags["data.throughput"]  = str(int(state.get("dsk_tp_" + key, 0.0)))
               lt_json = hist_json(d_hist)
