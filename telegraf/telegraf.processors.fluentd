@@ -313,23 +313,21 @@ def apply(metric):
     # system.disk.ops.count — sourced from estat_backend-io (BPF tracing), matching
     # Java's LocalIoCollector which used TracingDataCollector("io") — the same BPF
     # source. diskio (/proc/diskstats) was the wrong source: it had no op dimension,
-    # no avgLatency, and no throughput.
-    # estat_backend-io emits one row per (device, axis) every 10s. axis = read|write,
-    # matching Java's op field. iops(/s) and throughput(k/s) are per-second rates
-    # averaged over the 10s sample — multiply by 10 to recover per-sample totals,
-    # then accumulate across the 60s bucket (same logic as NFS/iSCSI).
-    # latency histogram is not available here (microseconds is dropped from
-    # estat_backend-io at order=2 before this processor runs at order=4);
-    # avgLatency alone is tracked as a follow-up (DLPX-101020).
+    # no avgLatency, no throughput, and no latency histogram.
+    # estat_backend-io uses the "name" tag for op direction ("read ", "write ") and
+    # is engine-wide (no per-device breakdown). iops(/s) and throughput(k/s) are
+    # per-second rates — multiply by 10 to get per-sample totals, then accumulate.
+    # microseconds is kept on estat_backend-io until order=5 (telegraf.inputs.storage_io
+    # was changed to drop it after us), so we can accumulate per-bucket histogram
+    # counts and emit data.latency as a JSON object matching Java's histogram shape.
     if name == "estat_backend-io":
         if "iops(/s)" not in metric.fields:
             return [metric]
-        # estat backend-io uses the "name" tag for op direction ("read ", "write ")
-        # and leaves "axis" empty — backend-io is engine-wide with no sub-axis.
         op         = metric.tags.get("name", "").strip()
         iops       = float(metric.fields["iops(/s)"]) * 10.0
         latency    = float(metric.fields.get("avg latency(us)", 0))
         throughput = float(metric.fields.get("throughput(k/s)", 0)) * 10.0
+        ms_str     = metric.fields.get("microseconds", None)
         key        = op
         bk         = "dsk_bk_" + key
         prev_bucket = state.get(bk, None)
@@ -340,19 +338,36 @@ def apply(metric):
             avg_lt = int(dsk_lt / cnt) if cnt > 0 else 0
             m = Metric("system.disk.ops")
             m.time = prev_bucket * BUCKET_NS
-            m.fields["count"] = int(state.get("dsk_cnt_" + key, 0.0))
+            m.fields["count"] = int(cnt)
             out.append(tag_identity(m))
             out[1].tags["data.op"]          = op
-            out[1].tags["data.count"]       = str(int(state.get("dsk_cnt_"  + key, 0.0)))
+            out[1].tags["data.count"]       = str(int(cnt))
             out[1].tags["data.avgLatency"]  = str(avg_lt)
-            out[1].tags["data.throughput"]  = str(int(state.get("dsk_tp_"   + key, 0.0)))
+            out[1].tags["data.throughput"]  = str(int(state.get("dsk_tp_" + key, 0.0)))
+            # Build data.latency JSON from accumulated histogram bucket counts.
+            hist = state.get("dsk_hist_" + key, {})
+            if hist:
+                items = []
+                for bkt in sorted(hist.keys()):
+                    items.append('"' + bkt + '":' + str(hist[bkt]))
+                out[1].tags["data.latency"] = "{" + ",".join(items) + "}"
             state["dsk_cnt_"  + key] = 0.0
             state["dsk_tp_"   + key] = 0.0
             state["dsk_lt_w_" + key] = 0.0
+            state["dsk_hist_" + key] = {}
         state[bk]                 = bucket
         state["dsk_cnt_"  + key]  = state.get("dsk_cnt_"  + key, 0.0) + iops
         state["dsk_tp_"   + key]  = state.get("dsk_tp_"   + key, 0.0) + throughput
         state["dsk_lt_w_" + key]  = state.get("dsk_lt_w_" + key, 0.0) + latency * iops
+        # Accumulate per-bucket histogram: sum counts across the 60s bucket's 10s samples.
+        if ms_str != None and len(ms_str) > 4:
+            hist = state.get("dsk_hist_" + key, {})
+            for pair in ms_str[1:-1].split("},{"):
+                parts = pair.split(",")
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    bkt = parts[0]
+                    hist[bkt] = hist.get(bkt, 0) + int(parts[1])
+            state["dsk_hist_" + key] = hist
         return out
 
     # system.tcp.total.bytes — one event per (laddr, raddr, service) per bucket,

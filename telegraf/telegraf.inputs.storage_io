@@ -73,15 +73,25 @@ def apply(metric):
   name_prefix = "hist_"
   namepass = ["estat_*"]
 
-# Drop microseconds from all original estat_* measurements after cloning.
-# Covers both storage_io (estat_nfs/iscsi/backend-io) and playbook
-# (estat_zpl/zvol/zio/etc) measurements in one place.
-# Uses starlark (not processors.strings) because fieldexclude in
-# processors.strings only filters which fields string transforms run on —
-# it does not remove fields from the metric.
+# Drop microseconds from estat_nfs and estat_iscsi after cloning (order=2).
+# estat_backend-io is excluded here so the fluentd starlark (order=4) can
+# read the microseconds histogram and include it as data.latency in the
+# system.disk.ops.count compat metric. A separate order=5 starlark below
+# drops microseconds from estat_backend-io after the fluentd processor runs.
 [[processors.starlark]]
   order = 2
-  namepass = ["estat_*"]
+  namepass = ["estat_nfs", "estat_iscsi"]
+  source = '''
+def apply(metric):
+    metric.fields.pop("microseconds", None)
+    return metric
+'''
+
+# Drop microseconds from estat_backend-io after the fluentd processor (order=4)
+# has had a chance to read and encode the latency histogram as data.latency.
+[[processors.starlark]]
+  order = 5
+  namepass = ["estat_backend-io"]
   source = '''
 def apply(metric):
     metric.fields.pop("microseconds", None)
