@@ -327,7 +327,7 @@ def apply(metric):
         iops       = float(metric.fields["iops(/s)"]) * 10.0
         latency    = float(metric.fields.get("avg latency(us)", 0))
         throughput = float(metric.fields.get("throughput(k/s)", 0)) * 10.0
-        ms_str     = metric.fields.get("microseconds", None)
+        ms_str     = metric.fields.get("_ms_hist", None)
         key        = op
         bk         = "dsk_bk_" + key
         prev_bucket = state.get(bk, None)

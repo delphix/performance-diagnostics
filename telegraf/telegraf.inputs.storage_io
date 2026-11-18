@@ -73,28 +73,41 @@ def apply(metric):
   name_prefix = "hist_"
   namepass = ["estat_*"]
 
-# Drop microseconds from estat_nfs and estat_iscsi after cloning (order=2).
-# estat_backend-io is excluded here so the fluentd starlark (order=4) can
-# read the microseconds histogram and include it as data.latency in the
-# system.disk.ops.count compat metric. A separate order=5 starlark below
-# drops microseconds from estat_backend-io after the fluentd processor runs.
+# Copy microseconds from estat_backend-io to a separate _ms_hist field before
+# the order=2 drop so the fluentd compat starlark (order=4) can build the
+# data.latency histogram. Only estat_backend-io needs this — NFS and iSCSI
+# don't emit compat latency histograms. All other estat_* are unaffected.
+[[processors.starlark]]
+  order = 1
+  namepass = ["estat_backend-io"]
+  source = '''
+def apply(metric):
+    ms = metric.fields.get("microseconds", None)
+    if ms != None:
+        metric.fields["_ms_hist"] = ms
+    return metric
+'''
+
+# Drop microseconds from all original estat_* measurements after cloning.
+# Covers both storage_io (estat_nfs/iscsi/backend-io) and playbook
+# (estat_zpl/zvol/zio/etc) measurements in one place — unchanged from original.
 [[processors.starlark]]
   order = 2
-  namepass = ["estat_nfs", "estat_iscsi"]
+  namepass = ["estat_*"]
   source = '''
 def apply(metric):
     metric.fields.pop("microseconds", None)
     return metric
 '''
 
-# Drop microseconds from estat_backend-io after the fluentd processor (order=4)
-# has had a chance to read and encode the latency histogram as data.latency.
+# Clean up _ms_hist from estat_backend-io after the fluentd processor (order=4)
+# has consumed it. Prevents the raw histogram string from reaching InfluxDB.
 [[processors.starlark]]
   order = 5
   namepass = ["estat_backend-io"]
   source = '''
 def apply(metric):
-    metric.fields.pop("microseconds", None)
+    metric.fields.pop("_ms_hist", None)
     return metric
 '''
 
