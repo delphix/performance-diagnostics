@@ -257,33 +257,45 @@ def apply(metric):
             state["isc_wl_w"]   = state.get("isc_wl_w",   0.0) + w
         return out
 
-    # system.net.total.bytes — data.* includes bytes + packets.
+    # system.net.total.bytes — one event per network interface, matching
+    # LocalNetworkInterfaceCollector.java which reads /proc/net/dev and emits
+    # one datapoint per interface (line 191: "networkInterface is always included,
+    # as the data is useless without that context"). _value = inBytes + outBytes,
+    # type = SUMMARY. Per-interface bucket state avoids cross-interface aggregation.
     if name == "net":
-        iface = metric.tags.get("interface", "")
-        recv = int(metric.fields.get("bytes_recv", 0))
-        sent = int(metric.fields.get("bytes_sent", 0))
+        iface    = metric.tags.get("interface", "")
+        recv     = int(metric.fields.get("bytes_recv",   0))
+        sent     = int(metric.fields.get("bytes_sent",   0))
         recv_pkt = int(metric.fields.get("packets_recv", 0))
         sent_pkt = int(metric.fields.get("packets_sent", 0))
         d_in  = cumulative_delta("net_r_"  + iface, recv)
         d_out = cumulative_delta("net_s_"  + iface, sent)
         d_ip  = cumulative_delta("net_rp_" + iface, recv_pkt)
         d_op  = cumulative_delta("net_sp_" + iface, sent_pkt)
+        bk          = "net_bk_"  + iface
+        prev_bucket = state.get(bk, None)
         out = [metric]
-        out = out + flush_counter("net", "system.net.total", "bytes", bucket)
-        if len(out) > 1:
-            out[1].tags["data.inBytes"]    = str(int(state.get("net_d_in",  0.0)))
-            out[1].tags["data.outBytes"]   = str(int(state.get("net_d_out", 0.0)))
-            out[1].tags["data.inPackets"]  = str(int(state.get("net_d_ip",  0.0)))
-            out[1].tags["data.outPackets"] = str(int(state.get("net_d_op",  0.0)))
-            state["net_d_in"]  = 0.0
-            state["net_d_out"] = 0.0
-            state["net_d_ip"]  = 0.0
-            state["net_d_op"]  = 0.0
-        state["net_acc"]   = state.get("net_acc",   0.0) + float(d_in + d_out)
-        state["net_d_in"]  = state.get("net_d_in",  0.0) + float(d_in)
-        state["net_d_out"] = state.get("net_d_out", 0.0) + float(d_out)
-        state["net_d_ip"]  = state.get("net_d_ip",  0.0) + float(d_ip)
-        state["net_d_op"]  = state.get("net_d_op",  0.0) + float(d_op)
+        if prev_bucket != None and prev_bucket != bucket:
+            in_b  = state.get("net_in_" + iface, 0.0)
+            out_b = state.get("net_out_" + iface, 0.0)
+            m = Metric("system.net.total")
+            m.time = prev_bucket * BUCKET_NS
+            m.fields["bytes"] = int(in_b + out_b)
+            out.append(tag_identity(m))
+            out[1].tags["data.networkInterface"] = iface
+            out[1].tags["data.inBytes"]          = str(int(in_b))
+            out[1].tags["data.outBytes"]         = str(int(out_b))
+            out[1].tags["data.inPackets"]        = str(int(state.get("net_ip_" + iface, 0.0)))
+            out[1].tags["data.outPackets"]       = str(int(state.get("net_op_" + iface, 0.0)))
+            state["net_in_"  + iface] = 0.0
+            state["net_out_" + iface] = 0.0
+            state["net_ip_"  + iface] = 0.0
+            state["net_op_"  + iface] = 0.0
+        state[bk]                 = bucket
+        state["net_in_"  + iface] = state.get("net_in_"  + iface, 0.0) + float(d_in)
+        state["net_out_" + iface] = state.get("net_out_" + iface, 0.0) + float(d_out)
+        state["net_ip_"  + iface] = state.get("net_ip_"  + iface, 0.0) + float(d_ip)
+        state["net_op_"  + iface] = state.get("net_op_"  + iface, 0.0) + float(d_op)
         return out
 
     # system.disk.ops.count — data.* includes reads/writes + bytes + times.
