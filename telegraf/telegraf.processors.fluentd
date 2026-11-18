@@ -25,18 +25,33 @@ NCPU            = int("${DELPHIX_NCPU}")
 CPU_SAMPLE_MS   = 10000
 CPU_MS_PER_PCT  = CPU_SAMPLE_MS * NCPU / 100.0
 BUCKET_NS       = 60 * 1000 * 1000 * 1000
+# estat reports "avg latency(us)" in microseconds (cmd/estat.py:282,294
+# accumulate (delta + 500) / 1000) and "throughput(k/s)" in kilobytes
+# (cmd/estat.py:297 accumulates size / 1024). delphix.json's IoOpsDatapoint
+# documents avgLatency as nanoseconds and throughput as bytes, so the Java
+# fold-met events these replace carry the unscaled values.
+US_TO_NS        = 1000
+KB_TO_B         = 1024
+# A key nothing has reported for in this many buckets is flushed by the sweep
+# even though no new sample arrived for it — a network interface that goes
+# away, a TCP endpoint that closes, a disk direction that goes idle. Two
+# buckets leaves a full bucket of grace for the timestamp skew between inputs
+# around a boundary, so a sweep never flushes a bucket still being filled.
+STALE_BUCKETS   = 2
 
 def hist_json(hist):
-    # Encode a {bucket: count} dict as a JSON object string in microseconds.
-    # hist_estat_* le tag values are in NANOSECONDS (from estat's internal histogram);
-    # Java's LocalIoCollector emitted latency buckets in MICROSECONDS. Divide by 1000
-    # to match Java's format. Sorted by numeric bucket value for deterministic output.
+    # Encode a {bucket: count} dict as a JSON object string. Both estat's "le"
+    # tags and Java's latency histogram keys come from log_lin_hist_slot() on a
+    # raw nanosecond delta — BCCHelper's ANALYTICS mode prints the slot value
+    # unscaled (lib/bcchelper.py:312-318, unlike the human-readable mode just
+    # below it), and delphix.json documents IoOpsDatapoint.latency as
+    # nanoseconds — so the keys pass through as they arrive. Sorted by numeric
+    # bucket value for deterministic output.
     if not hist:
         return ""
     items = []
     for bkt in sorted(hist.keys(), key=lambda x: int(x)):
-        us_bkt = str(int(bkt) // 1000)
-        items.append('"' + us_bkt + '":' + str(hist[bkt]))
+        items.append('"' + bkt + '":' + str(hist[bkt]))
     return "{" + ",".join(items) + "}"
 
 def tag_identity(m):
@@ -56,43 +71,196 @@ def cumulative_delta(key, current):
         return 0
     return d
 
-def flush_counter(prefix, measurement, field, bucket):
-    # If we have crossed a 60s bucket boundary, emit the previous bucket's
-    # accumulated sum and reset the accumulator for the new bucket. Returns a
-    # list (possibly empty) of metrics to emit.
-    bk = prefix + "_bucket"
-    ak = prefix + "_acc"
-    prev_bucket = state.get(bk, None)
-    out = []
-    if prev_bucket != None and prev_bucket != bucket:
-        acc = state.get(ak, 0.0)
-        m = Metric(measurement)
-        m.time = prev_bucket * BUCKET_NS
-        m.fields[field] = acc
-        out.append(tag_identity(m))
-        state[ak] = 0.0
-    state[bk] = bucket
-    return out
+def bkey(prefix, key, bkt):
+    # Every per-bucket accumulator is keyed by the bucket it belongs to, so a
+    # row's arrival order never matters. The storage_io processors.clone emits
+    # the hist_estat_* clone ahead of its estat_* original, so an accumulator
+    # shared across buckets hands bucket B's flush the first histogram rows of
+    # bucket B+1.
+    return prefix + key + "_" + str(bkt)
 
-def flush_gauge(prefix, measurement, field, bucket):
-    # Gauge version: emit the previous bucket's last-seen value when the
-    # bucket boundary is crossed. "last" is updated after this call.
-    bk = prefix + "_bucket"
-    lk = prefix + "_last"
-    prev_bucket = state.get(bk, None)
+def acc(prefix, key, bkt, value):
+    k = bkey(prefix, key, bkt)
+    state[k] = state.get(k, 0.0) + value
+    return None
+
+def mean(total, n):
+    return int(total / n) if n > 0 else 0
+
+def ops_event(measurement, op, bkt, cnt, tput, lat_sum, lat_w, hist):
+    # One system.*.ops event for a single op direction's 60s bucket, shaped like
+    # Java LocalIoCollector's per-op datapoints.
+    hist_cnt = 0
+    for bv in hist.values():
+        hist_cnt = hist_cnt + bv
+    # Prefer the histogram sum as the authoritative count — matches Java, which
+    # always used raw per-op counts so count == sum(latency buckets) exactly.
+    # Falls back to the iops-derived (bcchelper-floored) count when the
+    # histogram is empty.
+    emit_cnt = hist_cnt if hist_cnt > 0 else int(cnt)
+    if emit_cnt <= 0:
+        return []
+    m = Metric(measurement)
+    m.time = bkt * BUCKET_NS
+    m.fields["count"] = emit_cnt
+    tag_identity(m)
+    m.tags["data.op"]         = op
+    m.tags["data.count"]      = str(emit_cnt)
+    m.tags["data.avgLatency"] = str(int(mean(lat_sum, lat_w) * US_TO_NS))
+    m.tags["data.throughput"] = str(int(tput * KB_TO_B))
+    lt_json = hist_json(hist)
+    if lt_json:
+        m.tags["data.latency"] = lt_json
+    return [m]
+
+def emit_ops(prefix, measurement, op, bkt):
+    return ops_event(
+        measurement, op, bkt,
+        state.pop(bkey(prefix + "_cnt_",  op, bkt), 0.0),
+        state.pop(bkey(prefix + "_tp_",   op, bkt), 0.0),
+        state.pop(bkey(prefix + "_lsum_", op, bkt), 0.0),
+        state.pop(bkey(prefix + "_lw_",   op, bkt), 0.0),
+        state.pop(bkey(prefix + "_hist_", op, bkt), {}))
+
+def emit_disk(op, bkt):
+    return emit_ops("dsk", "system.disk.ops", op, bkt)
+
+def emit_nfs(op, bkt):
+    return emit_ops("nfs", "system.nfs.ops", op, bkt)
+
+def emit_iscsi(op, bkt):
+    return emit_ops("isc", "system.iscsi.ops", op, bkt)
+
+def emit_net(iface, bkt):
+    # system.net.total.bytes — one event per network interface, matching
+    # LocalNetworkInterfaceCollector.java which reads /proc/net/dev and emits
+    # one datapoint per interface (line 191: "networkInterface is always
+    # included, as the data is useless without that context").
+    # _value = inBytes + outBytes, type = SUMMARY.
+    in_b  = state.pop(bkey("net_in_", iface, bkt), 0.0)
+    out_b = state.pop(bkey("net_out_", iface, bkt), 0.0)
+    in_p  = state.pop(bkey("net_ip_", iface, bkt), 0.0)
+    out_p = state.pop(bkey("net_op_", iface, bkt), 0.0)
+    m = Metric("system.net.total")
+    m.time = bkt * BUCKET_NS
+    m.fields["bytes"] = int(in_b + out_b)
+    tag_identity(m)
+    m.tags["data.networkInterface"] = iface
+    m.tags["data.inBytes"]          = str(int(in_b))
+    m.tags["data.outBytes"]         = str(int(out_b))
+    m.tags["data.inPackets"]        = str(int(in_p))
+    m.tags["data.outPackets"]       = str(int(out_p))
+    return [m]
+
+def emit_tcp(key, bkt):
+    # system.tcp.total.bytes — one event per (laddr, raddr, service) per bucket,
+    # matching LocalTCPStatsCollector's BY_SERVICE grouping.
+    #
+    # TCPStatsPair.delta() splits the fields two ways. inBytes, outBytes and
+    # retransmittedSegs are cumulative counters, reported as deltas. The
+    # unacknowledged/unsent queues and the window and RTT fields are
+    # instantaneous gauges, reported as a mean over the connection-samples in
+    # the interval: connstat's suna and unsent are queue depths, not counters
+    # (connstat.c:112-113, snd_nxt - snd_una and write_seq - snd_nxt).
+    #
+    # connstat-stats.sh sums suna and unsent across a key's connections and
+    # averages swnd/cwnd/rwnd/rtt, reporting the count as "connections".
+    # Weighting by that count and dividing by its bucket total gives Java's
+    # per-connection-sample mean for all six gauges.
+    in_b  = state.pop(bkey("tcp_in_",  key, bkt), 0.0)
+    out_b = state.pop(bkey("tcp_out_", key, bkt), 0.0)
+    rseg  = state.pop(bkey("tcp_rs_",  key, bkt), 0.0)
+    suna  = state.pop(bkey("tcp_su_",  key, bkt), 0.0)
+    unst  = state.pop(bkey("tcp_un_",  key, bkt), 0.0)
+    swnd  = state.pop(bkey("tcp_sw_",  key, bkt), 0.0)
+    cwnd  = state.pop(bkey("tcp_cw_",  key, bkt), 0.0)
+    rwnd  = state.pop(bkey("tcp_rw_",  key, bkt), 0.0)
+    rtt   = state.pop(bkey("tcp_rt_",  key, bkt), 0.0)
+    conns = state.pop(bkey("tcp_cn_",  key, bkt), 0.0)
+    parts = key.split("|")
+    m = Metric("system.tcp.total")
+    m.time = bkt * BUCKET_NS
+    m.fields["bytes"] = int(in_b + out_b)
+    tag_identity(m)
+    m.tags["data.localAddress"]        = parts[0]
+    m.tags["data.remoteAddress"]       = parts[1]
+    m.tags["data.service"]             = parts[2]
+    m.tags["data.inBytes"]             = str(int(in_b))
+    m.tags["data.outBytes"]            = str(int(out_b))
+    m.tags["data.retransmittedSegs"]   = str(int(rseg))
+    m.tags["data.unacknowledgedBytes"] = str(mean(suna, conns))
+    m.tags["data.unsentBytes"]         = str(mean(unst, conns))
+    m.tags["data.sendWindowSize"]      = str(mean(swnd, conns))
+    m.tags["data.congestionWindowSize"]= str(mean(cwnd, conns))
+    m.tags["data.receiveWindowSize"]   = str(mean(rwnd, conns))
+    m.tags["data.roundTripTime"]       = str(mean(rtt,  conns))
+    return [m]
+
+# Per-family flush function, and the cumulative-counter baselines to drop when
+# a key is retired, so state does not grow without bound with remote-address
+# or interface cardinality.
+FAMS = {
+    "dsk": emit_disk,
+    "nfs": emit_nfs,
+    "isc": emit_iscsi,
+    "net": emit_net,
+    "tcp": emit_tcp,
+}
+BASELINES = {
+    "dsk": [],
+    "nfs": [],
+    "isc": [],
+    "net": ["netb_r_", "netb_s_", "netb_rp_", "netb_sp_"],
+    "tcp": ["tcpb_in_", "tcpb_out_", "tcpb_rs_"],
+}
+
+def track(fam, key, bucket):
+    # Record that <key> is accumulating into <bucket>, flushing the bucket it
+    # was accumulating into before. Returns the metrics to emit.
+    keys = state.get(fam + "_keys", {})
+    prev = keys.get(key, None)
+    if prev != None and bucket <= prev:
+        return []
+    keys[key] = bucket
+    state[fam + "_keys"] = keys
+    if prev == None:
+        return []
+    return FAMS[fam](key, prev)
+
+def sweep(bucket):
+    # Flush every key that has gone quiet. Without this a bucket is only ever
+    # flushed by the next sample carrying the same key, so a TCP endpoint that
+    # closes, an interface that is removed or a disk direction that goes idle
+    # would never report its last bucket. Any metric reaching this processor
+    # advances time — the cpu input samples every 10s regardless of I/O — so
+    # the trigger is shared across every key rather than per-key.
+    last = state.get("sweep_bk", -1)
+    if bucket <= last:
+        return []
+    state["sweep_bk"] = bucket
     out = []
-    if prev_bucket != None and prev_bucket != bucket and lk in state:
-        m = Metric(measurement)
-        m.time = prev_bucket * BUCKET_NS
-        m.fields[field] = state[lk]
-        out.append(tag_identity(m))
-    state[bk] = bucket
+    for fam in sorted(FAMS.keys()):
+        keys = state.get(fam + "_keys", {})
+        stale = []
+        for k in keys:
+            if keys[k] + STALE_BUCKETS <= bucket:
+                stale.append(k)
+        if not stale:
+            continue
+        for k in stale:
+            out.extend(FAMS[fam](k, keys[k]))
+            keys.pop(k, None)
+            for prefix in BASELINES[fam]:
+                state.pop(prefix + k, None)
+        state[fam + "_keys"] = keys
     return out
 
 def apply(metric):
     name   = metric.name
     ts     = metric.time
     bucket = ts // BUCKET_NS
+    out    = [metric]
+    out.extend(sweep(bucket))
 
     # system.cpu.util.pct — matches Java LocalCpuCollector semantics:
     #   user   = (usage_user + usage_nice)   * CPU_MS_PER_PCT per 10s sample
@@ -107,9 +275,9 @@ def apply(metric):
     # data.nice/system/iowait/irq/softirq/steal are raw-state extras in ms.
     if name == "cpu":
         if metric.tags.get("cpu") != "cpu-total":
-            return [metric]
+            return out
         if "usage_idle" not in metric.fields:
-            return [metric]
+            return out
         u_usr = float(metric.fields.get("usage_user",    0))
         u_nic = float(metric.fields.get("usage_nice",    0))
         u_sys = float(metric.fields.get("usage_system",  0))
@@ -118,7 +286,6 @@ def apply(metric):
         u_idl = float(metric.fields.get("usage_idle",    0))
         u_iow = float(metric.fields.get("usage_iowait",  0))
         u_stl = float(metric.fields.get("usage_steal",   0))
-        out = [metric]
         prev_bucket = state.get("cpu_bucket", None)
         if prev_bucket != None and prev_bucket != bucket:
             # Bucket boundary crossed: emit minute-wide totals, reset.
@@ -130,16 +297,17 @@ def apply(metric):
             m = Metric("system.cpu.util")
             m.time = prev_bucket * BUCKET_NS
             m.fields["pct"] = pct
-            out.append(tag_identity(m))
-            out[1].tags["data.user"]    = str(int(user_ms))
-            out[1].tags["data.kernel"]  = str(int(kernel_ms))
-            out[1].tags["data.idle"]    = str(int(idle_ms))
-            out[1].tags["data.nice"]    = str(int(state.get("cpu_nice_ms",    0.0)))
-            out[1].tags["data.system"]  = str(int(state.get("cpu_sys_ms",     0.0)))
-            out[1].tags["data.iowait"]  = str(int(state.get("cpu_iowait_ms",  0.0)))
-            out[1].tags["data.irq"]     = str(int(state.get("cpu_irq_ms",     0.0)))
-            out[1].tags["data.softirq"] = str(int(state.get("cpu_softirq_ms", 0.0)))
-            out[1].tags["data.steal"]   = str(int(state.get("cpu_steal_ms",   0.0)))
+            tag_identity(m)
+            m.tags["data.user"]    = str(int(user_ms))
+            m.tags["data.kernel"]  = str(int(kernel_ms))
+            m.tags["data.idle"]    = str(int(idle_ms))
+            m.tags["data.nice"]    = str(int(state.get("cpu_nice_ms",    0.0)))
+            m.tags["data.system"]  = str(int(state.get("cpu_sys_ms",     0.0)))
+            m.tags["data.iowait"]  = str(int(state.get("cpu_iowait_ms",  0.0)))
+            m.tags["data.irq"]     = str(int(state.get("cpu_irq_ms",     0.0)))
+            m.tags["data.softirq"] = str(int(state.get("cpu_softirq_ms", 0.0)))
+            m.tags["data.steal"]   = str(int(state.get("cpu_steal_ms",   0.0)))
+            out.append(m)
             state["cpu_user_ms"]    = 0.0
             state["cpu_kernel_ms"]  = 0.0
             state["cpu_idle_ms"]    = 0.0
@@ -162,368 +330,101 @@ def apply(metric):
         state["cpu_steal_ms"]   = state.get("cpu_steal_ms",   0.0) + u_stl * CPU_MS_PER_PCT
         return out
 
-    # system.nfs.ops.count — two events per 60s bucket (one per op direction),
-    # matching Java's LocalIoCollector which emitted separate op=read / op=write
-    # events each with data.op, data.count, data.avgLatency, data.throughput.
-    # NFS "name" tag is "<version>/<op>" (e.g. v3/read, v4/write); split-and-last
-    # extracts the direction. Per-axis rows (cached/uncached, sync/async) are
-    # accumulated into the direction bucket before flush.
-    # Latency: ops-weighted mean with floor-to-1 fallback for bcchelper-floored
-    # rows (see R3-2 fix). Throughput: per-sample KB summed over bucket.
-    if name == "estat_nfs":
-        if "iops(/s)" not in metric.fields:
-            return [metric]
-        iops       = float(metric.fields["iops(/s)"]) * 10.0
-        latency    = float(metric.fields.get("avg latency(us)", 0))
-        throughput = float(metric.fields.get("throughput(k/s)", 0)) * 10.0
-        direction  = metric.tags.get("name", "").split("/")[-1]
-        prev_bucket = state.get("nfs_bk", None)
-        out = [metric]
-        if prev_bucket != None and prev_bucket != bucket:
-            r_cnt  = state.get("nfs_d_r",    0.0)
-            r_lt_w = state.get("nfs_rl_w",   0.0)
-            r_avg  = int(state.get("nfs_rl_sum", 0.0) / r_lt_w) if r_lt_w > 0 else 0
-            w_cnt  = state.get("nfs_d_w",    0.0)
-            w_lt_w = state.get("nfs_wl_w",   0.0)
-            w_avg  = int(state.get("nfs_wl_sum", 0.0) / w_lt_w) if w_lt_w > 0 else 0
-            r_hist = state.get("nfs_hist_read",  {})
-            w_hist = state.get("nfs_hist_write", {})
-            r_hist_cnt = 0
-            for bv in r_hist.values():
-                r_hist_cnt = r_hist_cnt + bv
-            w_hist_cnt = 0
-            for bv in w_hist.values():
-                w_hist_cnt = w_hist_cnt + bv
-            # Prefer histogram sum as authoritative count (matches Java —
-            # histogram sum always equals count exactly). Falls back to the
-            # iops-derived (bcchelper-floored) count when no histogram.
-            r_emit = r_hist_cnt if r_hist_cnt > 0 else int(r_cnt)
-            w_emit = w_hist_cnt if w_hist_cnt > 0 else int(w_cnt)
-            if r_emit > 0:
-                mr = Metric("system.nfs.ops")
-                mr.time = prev_bucket * BUCKET_NS
-                mr.fields["count"] = r_emit
-                out.append(tag_identity(mr))
-                out[-1].tags["data.op"]         = "read"
-                out[-1].tags["data.count"]      = str(r_emit)
-                out[-1].tags["data.avgLatency"] = str(r_avg)
-                out[-1].tags["data.throughput"] = str(int(state.get("nfs_rt", 0.0)))
-                r_lt_json = hist_json(r_hist)
-                if r_lt_json:
-                    out[-1].tags["data.latency"] = r_lt_json
-            if w_emit > 0:
-                mw = Metric("system.nfs.ops")
-                mw.time = prev_bucket * BUCKET_NS
-                mw.fields["count"] = w_emit
-                out.append(tag_identity(mw))
-                out[-1].tags["data.op"]         = "write"
-                out[-1].tags["data.count"]      = str(w_emit)
-                out[-1].tags["data.avgLatency"] = str(w_avg)
-                out[-1].tags["data.throughput"] = str(int(state.get("nfs_wt", 0.0)))
-                w_lt_json = hist_json(w_hist)
-                if w_lt_json:
-                    out[-1].tags["data.latency"] = w_lt_json
-            state["nfs_d_r"]       = 0.0
-            state["nfs_d_w"]       = 0.0
-            state["nfs_rt"]        = 0.0
-            state["nfs_wt"]        = 0.0
-            state["nfs_rl_sum"]    = 0.0
-            state["nfs_wl_sum"]    = 0.0
-            state["nfs_rl_w"]      = 0.0
-            state["nfs_wl_w"]      = 0.0
-            state["nfs_hist_read"] = {}
-            state["nfs_hist_write"]= {}
-        state["nfs_bk"] = bucket
-        if direction == "read":
-            w = iops if iops > 0 else 1.0
-            state["nfs_d_r"]    = state.get("nfs_d_r",    0.0) + iops
-            state["nfs_rt"]     = state.get("nfs_rt",     0.0) + throughput
-            state["nfs_rl_sum"] = state.get("nfs_rl_sum", 0.0) + latency * w
-            state["nfs_rl_w"]   = state.get("nfs_rl_w",   0.0) + w
-        else:
-            w = iops if iops > 0 else 1.0
-            state["nfs_d_w"]    = state.get("nfs_d_w",    0.0) + iops
-            state["nfs_wt"]     = state.get("nfs_wt",     0.0) + throughput
-            state["nfs_wl_sum"] = state.get("nfs_wl_sum", 0.0) + latency * w
-            state["nfs_wl_w"]   = state.get("nfs_wl_w",   0.0) + w
-        return out
-
-    # system.iscsi.ops.count — same two-event-per-bucket pattern as NFS.
-    # iSCSI "name" tag is bare "read"/"write" per bpf/estat/iscsi.c.
-    if name == "estat_iscsi":
-        if "iops(/s)" not in metric.fields:
-            return [metric]
-        iops       = float(metric.fields["iops(/s)"]) * 10.0
-        latency    = float(metric.fields.get("avg latency(us)", 0))
-        throughput = float(metric.fields.get("throughput(k/s)", 0)) * 10.0
-        direction  = metric.tags.get("name", "").split("/")[-1]
-        prev_bucket = state.get("isc_bk", None)
-        out = [metric]
-        if prev_bucket != None and prev_bucket != bucket:
-            r_cnt  = state.get("isc_d_r",    0.0)
-            r_lt_w = state.get("isc_rl_w",   0.0)
-            r_avg  = int(state.get("isc_rl_sum", 0.0) / r_lt_w) if r_lt_w > 0 else 0
-            w_cnt  = state.get("isc_d_w",    0.0)
-            w_lt_w = state.get("isc_wl_w",   0.0)
-            w_avg  = int(state.get("isc_wl_sum", 0.0) / w_lt_w) if w_lt_w > 0 else 0
-            r_hist = state.get("isc_hist_read",  {})
-            w_hist = state.get("isc_hist_write", {})
-            r_hist_cnt = 0
-            for bv in r_hist.values():
-                r_hist_cnt = r_hist_cnt + bv
-            w_hist_cnt = 0
-            for bv in w_hist.values():
-                w_hist_cnt = w_hist_cnt + bv
-            # Prefer histogram sum as authoritative count (matches Java).
-            r_emit = r_hist_cnt if r_hist_cnt > 0 else int(r_cnt)
-            w_emit = w_hist_cnt if w_hist_cnt > 0 else int(w_cnt)
-            if r_emit > 0:
-                mr = Metric("system.iscsi.ops")
-                mr.time = prev_bucket * BUCKET_NS
-                mr.fields["count"] = r_emit
-                out.append(tag_identity(mr))
-                out[-1].tags["data.op"]         = "read"
-                out[-1].tags["data.count"]      = str(r_emit)
-                out[-1].tags["data.avgLatency"] = str(r_avg)
-                out[-1].tags["data.throughput"] = str(int(state.get("isc_rt", 0.0)))
-                r_lt_json = hist_json(r_hist)
-                if r_lt_json:
-                    out[-1].tags["data.latency"] = r_lt_json
-            if w_emit > 0:
-                mw = Metric("system.iscsi.ops")
-                mw.time = prev_bucket * BUCKET_NS
-                mw.fields["count"] = w_emit
-                out.append(tag_identity(mw))
-                out[-1].tags["data.op"]         = "write"
-                out[-1].tags["data.count"]      = str(w_emit)
-                out[-1].tags["data.avgLatency"] = str(w_avg)
-                out[-1].tags["data.throughput"] = str(int(state.get("isc_wt", 0.0)))
-                w_lt_json = hist_json(w_hist)
-                if w_lt_json:
-                    out[-1].tags["data.latency"] = w_lt_json
-            state["isc_d_r"]       = 0.0
-            state["isc_d_w"]       = 0.0
-            state["isc_rt"]        = 0.0
-            state["isc_wt"]        = 0.0
-            state["isc_rl_sum"]    = 0.0
-            state["isc_wl_sum"]    = 0.0
-            state["isc_rl_w"]      = 0.0
-            state["isc_wl_w"]      = 0.0
-            state["isc_hist_read"] = {}
-            state["isc_hist_write"]= {}
-        state["isc_bk"] = bucket
-        if direction == "read":
-            w = iops if iops > 0 else 1.0
-            state["isc_d_r"]    = state.get("isc_d_r",    0.0) + iops
-            state["isc_rt"]     = state.get("isc_rt",     0.0) + throughput
-            state["isc_rl_sum"] = state.get("isc_rl_sum", 0.0) + latency * w
-            state["isc_rl_w"]   = state.get("isc_rl_w",   0.0) + w
-        else:
-            w = iops if iops > 0 else 1.0
-            state["isc_d_w"]    = state.get("isc_d_w",    0.0) + iops
-            state["isc_wt"]     = state.get("isc_wt",     0.0) + throughput
-            state["isc_wl_sum"] = state.get("isc_wl_sum", 0.0) + latency * w
-            state["isc_wl_w"]   = state.get("isc_wl_w",   0.0) + w
-        return out
-
-    # system.net.total.bytes — one event per network interface, matching
-    # LocalNetworkInterfaceCollector.java which reads /proc/net/dev and emits
-    # one datapoint per interface (line 191: "networkInterface is always included,
-    # as the data is useless without that context"). _value = inBytes + outBytes,
-    # type = SUMMARY. Per-interface bucket state avoids cross-interface aggregation.
-    if name == "net":
-        iface    = metric.tags.get("interface", "")
-        recv     = int(metric.fields.get("bytes_recv",   0))
-        sent     = int(metric.fields.get("bytes_sent",   0))
-        recv_pkt = int(metric.fields.get("packets_recv", 0))
-        sent_pkt = int(metric.fields.get("packets_sent", 0))
-        d_in  = cumulative_delta("net_r_"  + iface, recv)
-        d_out = cumulative_delta("net_s_"  + iface, sent)
-        d_ip  = cumulative_delta("net_rp_" + iface, recv_pkt)
-        d_op  = cumulative_delta("net_sp_" + iface, sent_pkt)
-        bk          = "net_bk_"  + iface
-        prev_bucket = state.get(bk, None)
-        out = [metric]
-        if prev_bucket != None and prev_bucket != bucket:
-            in_b  = state.get("net_in_" + iface, 0.0)
-            out_b = state.get("net_out_" + iface, 0.0)
-            m = Metric("system.net.total")
-            m.time = prev_bucket * BUCKET_NS
-            m.fields["bytes"] = int(in_b + out_b)
-            out.append(tag_identity(m))
-            out[1].tags["data.networkInterface"] = iface
-            out[1].tags["data.inBytes"]          = str(int(in_b))
-            out[1].tags["data.outBytes"]         = str(int(out_b))
-            out[1].tags["data.inPackets"]        = str(int(state.get("net_ip_" + iface, 0.0)))
-            out[1].tags["data.outPackets"]       = str(int(state.get("net_op_" + iface, 0.0)))
-            state["net_in_"  + iface] = 0.0
-            state["net_out_" + iface] = 0.0
-            state["net_ip_"  + iface] = 0.0
-            state["net_op_"  + iface] = 0.0
-        state[bk]                 = bucket
-        state["net_in_"  + iface] = state.get("net_in_"  + iface, 0.0) + float(d_in)
-        state["net_out_" + iface] = state.get("net_out_" + iface, 0.0) + float(d_out)
-        state["net_ip_"  + iface] = state.get("net_ip_"  + iface, 0.0) + float(d_ip)
-        state["net_op_"  + iface] = state.get("net_op_"  + iface, 0.0) + float(d_op)
-        return out
-
-    # system.disk.ops.count — sourced from estat_backend-io (BPF tracing), matching
-    # Java's LocalIoCollector which used TracingDataCollector("io"). estat_backend-io
-    # uses the "name" tag for op direction ("read ", "write ") and is engine-wide.
-    # Latency histogram is accumulated from hist_estat_backend-io per-bucket rows
-    # (see handler below) into state["dsk_hist_{op}"] before flush.
-    if name == "estat_backend-io":
-        if "iops(/s)" not in metric.fields:
-            return [metric]
-        op         = metric.tags.get("name", "").strip()
-        iops       = float(metric.fields["iops(/s)"]) * 10.0
-        latency    = float(metric.fields.get("avg latency(us)", 0))
-        throughput = float(metric.fields.get("throughput(k/s)", 0)) * 10.0
-        key        = op
-        bk         = "dsk_bk_" + key
-        prev_bucket = state.get(bk, None)
-        out = [metric]
-        if prev_bucket != None and prev_bucket != bucket:
-            cnt    = state.get("dsk_cnt_"  + key, 0.0)
-            dsk_lt = state.get("dsk_lt_w_" + key, 0.0)
-            avg_lt = int(dsk_lt / cnt) if cnt > 0 else 0
-            d_hist = state.get("dsk_hist_" + key, {})
-            # Prefer the histogram sum as the authoritative count when a
-            # histogram is present — matches Java, which always used raw
-            # per-op counts so count == sum(latency buckets) exactly.
-            # Falls back to the iops-derived (bcchelper-floored) count when
-            # the histogram is empty.
-            hist_cnt = 0
-            for bv in d_hist.values():
-                hist_cnt = hist_cnt + bv
-            emit_cnt = hist_cnt if hist_cnt > 0 else int(cnt)
-            if emit_cnt > 0:
-              m = Metric("system.disk.ops")
-              m.time = prev_bucket * BUCKET_NS
-              m.fields["count"] = emit_cnt
-              out.append(tag_identity(m))
-              out[-1].tags["data.op"]          = op
-              out[-1].tags["data.count"]       = str(emit_cnt)
-              out[-1].tags["data.avgLatency"]  = str(avg_lt)
-              out[-1].tags["data.throughput"]  = str(int(state.get("dsk_tp_" + key, 0.0)))
-              lt_json = hist_json(d_hist)
-              if lt_json:
-                  out[-1].tags["data.latency"] = lt_json
-            state["dsk_cnt_"  + key] = 0.0
-            state["dsk_tp_"   + key] = 0.0
-            state["dsk_lt_w_" + key] = 0.0
-            state["dsk_hist_" + key] = {}
-        state[bk]                 = bucket
-        state["dsk_cnt_"  + key]  = state.get("dsk_cnt_"  + key, 0.0) + iops
-        state["dsk_tp_"   + key]  = state.get("dsk_tp_"   + key, 0.0) + throughput
-        state["dsk_lt_w_" + key]  = state.get("dsk_lt_w_" + key, 0.0) + latency * iops
-        return out
-
-    # Accumulate disk latency histogram from expanded hist_estat_backend-io rows.
-    # order=3 expands each microseconds string into one metric per bucket (le tag).
-    # We sum counts across all 10s samples in the 60s bucket per op direction.
-    if name == "hist_estat_backend-io":
-        op  = metric.tags.get("name", "").strip()
-        bkt = metric.tags.get("le", "")
-        cnt = int(metric.fields.get("count", 0))
-        if op and bkt and cnt > 0:
-            hist = state.get("dsk_hist_" + op, {})
-            hist[bkt] = hist.get(bkt, 0) + cnt
-            state["dsk_hist_" + op] = hist
-        return [metric]
-
-    # Accumulate NFS latency histogram from hist_estat_nfs per-bucket rows.
-    if name == "hist_estat_nfs":
-        direction = metric.tags.get("name", "").split("/")[-1]
-        bkt       = metric.tags.get("le", "")
-        cnt       = int(metric.fields.get("count", 0))
-        if direction and bkt and cnt > 0:
-            key  = "nfs_hist_" + direction
-            hist = state.get(key, {})
-            hist[bkt] = hist.get(bkt, 0) + cnt
-            state[key] = hist
-        return [metric]
-
-    # Accumulate iSCSI latency histogram from hist_estat_iscsi per-bucket rows.
-    if name == "hist_estat_iscsi":
-        direction = metric.tags.get("name", "").strip()
-        bkt       = metric.tags.get("le", "")
-        cnt       = int(metric.fields.get("count", 0))
-        if direction and bkt and cnt > 0:
-            key  = "isc_hist_" + direction
-            hist = state.get(key, {})
-            hist[bkt] = hist.get(bkt, 0) + cnt
-            state[key] = hist
-        return [metric]
-
-    # system.tcp.total.bytes — one event per (laddr, raddr, service) per bucket,
-    # matching LocalTCPStatsCollector which aggregates by service and emits one
-    # datapoint per (laddr, raddr, service) group (BY_SERVICE compare mode).
-    # connstat-stats.sh already does this same aggregation (line 7: "mirrors the
-    # aggregation done by LocalTCPStatsCollector"), so Telegraf receives one
-    # tcp_stats metric per key — not one per connection.
+    # system.nfs.ops.count / system.iscsi.ops.count / system.disk.ops.count —
+    # one event per op direction per 60s bucket, matching Java's LocalIoCollector
+    # which emitted separate op=read / op=write events each with data.op,
+    # data.count, data.avgLatency, data.throughput and data.latency.
     #
-    # Cumulative fields (inbytes, outbytes, retranssegs, suna, unsent) are summed
-    # across the 60s bucket via cumulative_delta. Instantaneous fields (swnd, cwnd,
-    # rwnd, rtt) are already averaged across connections by connstat; we store the
-    # last value seen in the bucket (matches Java's representative-connection approach).
-    if name == "tcp_stats":
-        laddr   = metric.tags.get("laddr",   "")
-        raddr   = metric.tags.get("raddr",   "")
-        service = metric.tags.get("service", "")
-        key     = laddr + "|" + raddr + "|" + service
-        inb     = int(metric.fields.get("inbytes",     0))
-        outb    = int(metric.fields.get("outbytes",    0))
-        rseg    = int(metric.fields.get("retranssegs", 0))
-        suna    = int(metric.fields.get("suna",        0))
-        unsent  = int(metric.fields.get("unsent",      0))
-        swnd    = int(metric.fields.get("swnd",        0))
-        cwnd    = int(metric.fields.get("cwnd",        0))
-        rwnd    = int(metric.fields.get("rwnd",        0))
-        rtt     = int(metric.fields.get("rtt",         0))
-        d_in  = cumulative_delta("tcp_in_"  + key, inb)
-        d_out = cumulative_delta("tcp_out_" + key, outb)
-        d_rs  = cumulative_delta("tcp_rs_"  + key, rseg)
-        d_su  = cumulative_delta("tcp_su_"  + key, suna)
-        d_un  = cumulative_delta("tcp_un_"  + key, unsent)
-        bk          = "tcp_bk_" + key
-        prev_bucket = state.get(bk, None)
-        out = [metric]
-        if prev_bucket != None and prev_bucket != bucket:
-            in_b  = state.get("tcp_in2_"  + key, 0.0)
-            out_b = state.get("tcp_out2_" + key, 0.0)
-            m = Metric("system.tcp.total")
-            m.time = prev_bucket * BUCKET_NS
-            m.fields["bytes"] = int(in_b + out_b)
-            out.append(tag_identity(m))
-            out[1].tags["data.localAddress"]        = laddr
-            out[1].tags["data.remoteAddress"]       = raddr
-            out[1].tags["data.service"]             = service
-            out[1].tags["data.inBytes"]             = str(int(in_b))
-            out[1].tags["data.outBytes"]            = str(int(out_b))
-            out[1].tags["data.retransmittedSegs"]   = str(int(state.get("tcp_rs2_" + key, 0.0)))
-            out[1].tags["data.unacknowledgedBytes"] = str(int(state.get("tcp_su2_" + key, 0.0)))
-            out[1].tags["data.unsentBytes"]         = str(int(state.get("tcp_un2_" + key, 0.0)))
-            out[1].tags["data.sendWindowSize"]      = str(state.get("tcp_sw_"  + key, 0))
-            out[1].tags["data.congestionWindowSize"]= str(state.get("tcp_cw_"  + key, 0))
-            out[1].tags["data.receiveWindowSize"]   = str(state.get("tcp_rw_"  + key, 0))
-            out[1].tags["data.roundTripTime"]       = str(state.get("tcp_rt_"  + key, 0))
-            state["tcp_in2_"  + key] = 0.0
-            state["tcp_out2_" + key] = 0.0
-            state["tcp_rs2_"  + key] = 0.0
-            state["tcp_su2_"  + key] = 0.0
-            state["tcp_un2_"  + key] = 0.0
-        state[bk]                 = bucket
-        state["tcp_in2_"  + key]  = state.get("tcp_in2_"  + key, 0.0) + float(d_in)
-        state["tcp_out2_" + key]  = state.get("tcp_out2_" + key, 0.0) + float(d_out)
-        state["tcp_rs2_"  + key]  = state.get("tcp_rs2_"  + key, 0.0) + float(d_rs)
-        state["tcp_su2_"  + key]  = state.get("tcp_su2_"  + key, 0.0) + float(d_su)
-        state["tcp_un2_"  + key]  = state.get("tcp_un2_"  + key, 0.0) + float(d_un)
-        state["tcp_sw_"   + key]  = swnd
-        state["tcp_cw_"   + key]  = cwnd
-        state["tcp_rw_"   + key]  = rwnd
-        state["tcp_rt_"   + key]  = rtt
+    # NFS "name" is "<version>/<op>" (e.g. v3/read); iSCSI's is bare
+    # "read"/"write" (bpf/estat/iscsi.c:33-34); estat_backend-io's is "read "
+    # or "write ". Per-axis rows (cached/uncached, sync/async) accumulate into
+    # the direction's bucket before flush.
+    #
+    # Latency is an ops-weighted mean. bcchelper integer-divides the op count by
+    # the sample interval, so a 10s sample holding 1-9 operations floors to
+    # iops = 0; weighting by a bare zero would drop those samples and report
+    # avgLatency = 0 beside a populated histogram, so the weight floors to 1.
+    if name == "estat_nfs" or name == "estat_iscsi" or name == "estat_backend-io":
+        if "iops(/s)" not in metric.fields:
+            return out
+        prefix = "nfs" if name == "estat_nfs" else ("isc" if name == "estat_iscsi" else "dsk")
+        op     = io_direction(metric)
+        out.extend(track(prefix, op, bucket))
+        iops       = float(metric.fields["iops(/s)"]) * 10.0
+        latency    = float(metric.fields.get("avg latency(us)", 0))
+        throughput = float(metric.fields.get("throughput(k/s)", 0)) * 10.0
+        w          = iops if iops > 0 else 1.0
+        acc(prefix + "_cnt_",  op, bucket, iops)
+        acc(prefix + "_tp_",   op, bucket, throughput)
+        acc(prefix + "_lsum_", op, bucket, latency * w)
+        acc(prefix + "_lw_",   op, bucket, w)
         return out
 
-    return [metric]
+    # Accumulate latency histograms from the expanded hist_estat_* rows. The
+    # order=3 storage_io processor turns each microseconds string into one
+    # metric per histogram bucket (le tag); we sum those counts across the 10s
+    # samples making up the 60s bucket, per op direction.
+    if name == "hist_estat_nfs" or name == "hist_estat_iscsi" or name == "hist_estat_backend-io":
+        prefix = "nfs" if name == "hist_estat_nfs" else ("isc" if name == "hist_estat_iscsi" else "dsk")
+        op     = io_direction(metric)
+        le     = metric.tags.get("le", "")
+        cnt    = int(metric.fields.get("count", 0))
+        if le and cnt > 0:
+            out.extend(track(prefix, op, bucket))
+            k = bkey(prefix + "_hist_", op, bucket)
+            hist = state.get(k, {})
+            hist[le] = hist.get(le, 0) + cnt
+            state[k] = hist
+        return out
+
+    if name == "net":
+        iface = metric.tags.get("interface", "")
+        if not iface:
+            return out
+        out.extend(track("net", iface, bucket))
+        d_in  = cumulative_delta("netb_r_"  + iface, int(metric.fields.get("bytes_recv",   0)))
+        d_out = cumulative_delta("netb_s_"  + iface, int(metric.fields.get("bytes_sent",   0)))
+        d_ip  = cumulative_delta("netb_rp_" + iface, int(metric.fields.get("packets_recv", 0)))
+        d_op  = cumulative_delta("netb_sp_" + iface, int(metric.fields.get("packets_sent", 0)))
+        acc("net_in_",  iface, bucket, float(d_in))
+        acc("net_out_", iface, bucket, float(d_out))
+        acc("net_ip_",  iface, bucket, float(d_ip))
+        acc("net_op_",  iface, bucket, float(d_op))
+        return out
+
+    # connstat-stats.sh already aggregates by (laddr, raddr, service) the way
+    # LocalTCPStatsCollector does (line 7), so Telegraf receives one tcp_stats
+    # metric per key — not one per connection. See emit_tcp for how the
+    # cumulative and gauge fields are folded into the bucket.
+    if name == "tcp_stats":
+        key = (metric.tags.get("laddr",   "") + "|" +
+               metric.tags.get("raddr",   "") + "|" +
+               metric.tags.get("service", ""))
+        out.extend(track("tcp", key, bucket))
+        conns = float(metric.fields.get("connections", 1))
+        if conns <= 0:
+            conns = 1.0
+        d_in  = cumulative_delta("tcpb_in_"  + key, int(metric.fields.get("inbytes",     0)))
+        d_out = cumulative_delta("tcpb_out_" + key, int(metric.fields.get("outbytes",    0)))
+        d_rs  = cumulative_delta("tcpb_rs_"  + key, int(metric.fields.get("retranssegs", 0)))
+        acc("tcp_in_",  key, bucket, float(d_in))
+        acc("tcp_out_", key, bucket, float(d_out))
+        acc("tcp_rs_",  key, bucket, float(d_rs))
+        acc("tcp_su_",  key, bucket, float(metric.fields.get("suna",   0)))
+        acc("tcp_un_",  key, bucket, float(metric.fields.get("unsent", 0)))
+        acc("tcp_sw_",  key, bucket, float(metric.fields.get("swnd",   0)) * conns)
+        acc("tcp_cw_",  key, bucket, float(metric.fields.get("cwnd",   0)) * conns)
+        acc("tcp_rw_",  key, bucket, float(metric.fields.get("rwnd",   0)) * conns)
+        acc("tcp_rt_",  key, bucket, float(metric.fields.get("rtt",    0)) * conns)
+        acc("tcp_cn_",  key, bucket, conns)
+        return out
+
+    return out
+
+def io_direction(metric):
+    # estat and hist_estat rows must land on the same key, so both go through
+    # this. Only read and write are traced (bpf/estat/nfs.c:59-60,
+    # bpf/estat/iscsi.c:33-34); anything else counts as a write, as before.
+    d = metric.tags.get("name", "").strip().split("/")[-1]
+    return "read" if d == "read" else "write"
 '''
