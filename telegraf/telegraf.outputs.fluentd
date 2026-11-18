@@ -8,14 +8,22 @@
   method = "POST"
   data_format = "splunkmetric"
   splunkmetric_hec_routing = true
-  # One POST per metric: batched splunkmetric emits concatenated JSON with no delimiter, which fluentd's JSON parser silently truncates to the first object.
+  # One POST per metric: batched splunkmetric emits concatenated JSON with no
+  # delimiter, which fluentd's JSON parser silently truncates to the first
+  # object. That holds at any volume, so this stays false even though the
+  # processor now fans a flush out to far more than one metric per name.
   use_batch_format = false
   flush_interval = "60s"
   timeout = "10s"
-  # Buffer a few minutes of compat metrics so a brief fluentd restart doesn't
-  # lose data. The processor emits ~6 metrics per flush (one per Java metric
-  # name), so 2048 buffers > 5 hours of history — well above typical downtime.
-  metric_buffer_limit = 2048
+  # Buffer compat metrics so a brief fluentd restart doesn't lose data. The
+  # processor emits one event per minute for cpu, two each for disk, NFS and
+  # iSCSI (read and write), one per network interface, and one per
+  # (laddr, raddr, service) TCP endpoint. The TCP term dominates: an Oracle
+  # dNFS or Elastic Data engine can hold a few hundred distinct endpoints, so
+  # budget ~250 metrics per flush rather than the ~6 this was first sized for.
+  # 10000 (Telegraf's own default) is ~40 minutes of history at that rate, and
+  # many hours on an engine with a handful of endpoints.
+  metric_buffer_limit = 10000
   namepass = ["system.cpu.util", "system.net.total", "system.disk.ops",
               "system.nfs.ops", "system.iscsi.ops", "system.tcp.total"]
   [outputs.http.headers]
