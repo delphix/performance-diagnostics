@@ -38,6 +38,15 @@ KB_TO_B         = 1024
 # buckets leaves a full bucket of grace for the timestamp skew between inputs
 # around a boundary, so a sweep never flushes a bucket still being filled.
 STALE_BUCKETS   = 2
+# connstat runs with -i 10 (connstat-stats.sh), so each tcp_stats sample
+# describes a 10-second window.
+TCP_SAMPLE_S    = 10
+# A sweep advances its clock by at most this many buckets per metric. One
+# out-of-range timestamp would otherwise park it somewhere real time will not
+# reach for hours, silencing the sweep until it did. One bucket is what time
+# passing looks like, so the clamp never retires a key still filling the
+# current bucket, and a real forward step catches up within a few samples.
+MAX_SWEEP_JUMP  = 1
 
 def hist_json(hist):
     # Encode a {bucket: count} dict as a JSON object string. Both estat's "le"
@@ -86,6 +95,17 @@ def acc(prefix, key, bkt, value):
 
 def mean(total, n):
     return int(total / n) if n > 0 else 0
+
+def gauge_sum(total, conns, samples):
+    # Java's minute value for one of TCP_STATS' instantaneous gauges. Its
+    # one-second datapoint holds the mean across the connections sampled in
+    # that second (TCPStatsPair.delta():38-43 divides the combined value by the
+    # combined datapoint count), and the minute datapoint the fluentd output
+    # carries sums 60 of those, because AnalyticsDatapointDO.combineWith() adds
+    # INTEGER axes and StatisticType declares all six gauges INTEGER. So the
+    # value is the per-connection mean times the seconds the key was live, not
+    # the mean itself.
+    return str(int(mean(total, conns) * TCP_SAMPLE_S * samples))
 
 def ops_event(measurement, op, bkt, cnt, tput, lat_sum, lat_w, hist):
     # One system.*.ops event for a single op direction's 60s bucket, shaped like
@@ -157,16 +177,18 @@ def emit_tcp(key, bkt):
     # matching LocalTCPStatsCollector's BY_SERVICE grouping.
     #
     # TCPStatsPair.delta() splits the fields two ways. inBytes, outBytes and
-    # retransmittedSegs are cumulative counters, reported as deltas. The
+    # retransmittedSegs are cumulative counters, reported as deltas, and a
+    # minute's worth of them sums to the minute's total either way. The
     # unacknowledged/unsent queues and the window and RTT fields are
-    # instantaneous gauges, reported as a mean over the connection-samples in
-    # the interval: connstat's suna and unsent are queue depths, not counters
-    # (connstat.c:112-113, snd_nxt - snd_una and write_seq - snd_nxt).
+    # instantaneous gauges: connstat's suna and unsent are queue depths, not
+    # counters (connstat.c:112-113, snd_nxt - snd_una and write_seq - snd_nxt).
+    # Those six go through gauge_sum, which puts them on the minute scale
+    # Java's events carry.
     #
     # connstat-stats.sh sums suna and unsent across a key's connections and
     # averages swnd/cwnd/rwnd/rtt, reporting the count as "connections".
-    # Weighting by that count and dividing by its bucket total gives Java's
-    # per-connection-sample mean for all six gauges.
+    # Weighting by that count and dividing by its bucket total gives the
+    # per-connection mean for all six alike.
     in_b  = state.pop(bkey("tcp_in_",  key, bkt), 0.0)
     out_b = state.pop(bkey("tcp_out_", key, bkt), 0.0)
     rseg  = state.pop(bkey("tcp_rs_",  key, bkt), 0.0)
@@ -177,6 +199,7 @@ def emit_tcp(key, bkt):
     rwnd  = state.pop(bkey("tcp_rw_",  key, bkt), 0.0)
     rtt   = state.pop(bkey("tcp_rt_",  key, bkt), 0.0)
     conns = state.pop(bkey("tcp_cn_",  key, bkt), 0.0)
+    samps = state.pop(bkey("tcp_ns_",  key, bkt), 0.0)
     parts = key.split("|")
     m = Metric("system.tcp.total")
     m.time = bkt * BUCKET_NS
@@ -188,12 +211,12 @@ def emit_tcp(key, bkt):
     m.tags["data.inBytes"]             = str(int(in_b))
     m.tags["data.outBytes"]            = str(int(out_b))
     m.tags["data.retransmittedSegs"]   = str(int(rseg))
-    m.tags["data.unacknowledgedBytes"] = str(mean(suna, conns))
-    m.tags["data.unsentBytes"]         = str(mean(unst, conns))
-    m.tags["data.sendWindowSize"]      = str(mean(swnd, conns))
-    m.tags["data.congestionWindowSize"]= str(mean(cwnd, conns))
-    m.tags["data.receiveWindowSize"]   = str(mean(rwnd, conns))
-    m.tags["data.roundTripTime"]       = str(mean(rtt,  conns))
+    m.tags["data.unacknowledgedBytes"] = gauge_sum(suna, conns, samps)
+    m.tags["data.unsentBytes"]         = gauge_sum(unst, conns, samps)
+    m.tags["data.sendWindowSize"]      = gauge_sum(swnd, conns, samps)
+    m.tags["data.congestionWindowSize"]= gauge_sum(cwnd, conns, samps)
+    m.tags["data.receiveWindowSize"]   = gauge_sum(rwnd, conns, samps)
+    m.tags["data.roundTripTime"]       = gauge_sum(rtt,  conns, samps)
     return [m]
 
 # Per-family flush function, and the cumulative-counter baselines to drop when
@@ -217,9 +240,14 @@ BASELINES = {
 def track(fam, key, bucket):
     # Record that <key> is accumulating into <bucket>, flushing the bucket it
     # was accumulating into before. Returns the metrics to emit.
+    #
+    # Any change of bucket flushes, backwards as well as forwards. Only the
+    # bucket in keys[key] is ever popped, so a clock that steps back would
+    # otherwise leave the older bucket's accumulators under a key nothing
+    # flushes and nothing frees.
     keys = state.get(fam + "_keys", {})
     prev = keys.get(key, None)
-    if prev != None and bucket <= prev:
+    if prev == bucket:
         return []
     keys[key] = bucket
     state[fam + "_keys"] = keys
@@ -237,6 +265,8 @@ def sweep(bucket):
     last = state.get("sweep_bk", -1)
     if bucket <= last:
         return []
+    if last >= 0 and bucket - last > MAX_SWEEP_JUMP:
+        bucket = last + MAX_SWEEP_JUMP
     state["sweep_bk"] = bucket
     out = []
     for fam in sorted(FAMS.keys()):
@@ -417,6 +447,7 @@ def apply(metric):
         acc("tcp_rw_",  key, bucket, float(metric.fields.get("rwnd",   0)) * conns)
         acc("tcp_rt_",  key, bucket, float(metric.fields.get("rtt",    0)) * conns)
         acc("tcp_cn_",  key, bucket, conns)
+        acc("tcp_ns_",  key, bucket, 1.0)
         return out
 
     return out

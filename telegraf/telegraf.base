@@ -58,8 +58,12 @@
 [[inputs.mem]]
   fieldpass = ["used", "available", "total", "free", "cached", "buffered", "dirty", "slab"]
 
-# Get some network interface stats
+# Get some network interface stats. With no interfaces set, inputs.net skips
+# loopback and down interfaces, while LocalNetworkInterfaceCollector walks
+# every /proc/net/dev line; interfaces = ["*"] matches it, so the fluentd
+# compat stream carries networkInterface=lo as the Java one did.
 [[inputs.net]]
+  interfaces = ["*"]
   fieldpass = ["tcp*","bytes*","packets*","err*","drop*"]
 
 # Per-endpoint TCP stats (bytes, RTT, window sizes) via connstat.
