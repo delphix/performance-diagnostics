@@ -41,11 +41,12 @@ STALE_BUCKETS   = 2
 # connstat runs with -i 10 (connstat-stats.sh), so each tcp_stats sample
 # describes a 10-second window.
 TCP_SAMPLE_S    = 10
-# A sweep advances its clock by at most this many buckets per metric. One
-# out-of-range timestamp would otherwise park it somewhere real time will not
-# reach for hours, silencing the sweep until it did. One bucket is what time
-# passing looks like, so the clamp never retires a key still filling the
-# current bucket, and a real forward step catches up within a few samples.
+# A sweep moves its clock by at most this many buckets per metric, in either
+# direction. One out-of-range timestamp would otherwise park it where real time
+# will not reach for hours. One far enough behind would strand it in the past,
+# to climb out a bucket at a time. One bucket is what time passing looks like,
+# so the clamp never retires a key still filling the current bucket, and a real
+# step of either sign catches up within a few samples.
 MAX_SWEEP_JUMP  = 1
 
 def hist_json(hist):
@@ -265,11 +266,23 @@ def sweep(bucket):
     # would never report its last bucket. Any metric reaching this processor
     # advances time — the cpu input samples every 10s regardless of I/O — so
     # the trigger is shared across every key rather than per-key.
+    #
+    # The clock follows time backwards as well as forwards. A metric one
+    # bucket or less behind it is the ordinary skew between inputs around a
+    # boundary, and leaves it where it is. Anything further back is a clock
+    # that stepped, from an NTP correction or a snapshot revert, and the clock
+    # has to follow it. Left in the future it retires no key for as long as
+    # the step was. Retreating flushes nothing: the keys filling the buckets
+    # the recovered clock describes are swept the usual way once it advances.
     last = state.get("sweep_bk", -1)
-    if bucket <= last:
-        return []
-    if last >= 0 and bucket - last > MAX_SWEEP_JUMP:
-        bucket = last + MAX_SWEEP_JUMP
+    if last >= 0:
+        if bucket < last - MAX_SWEEP_JUMP:
+            state["sweep_bk"] = last - MAX_SWEEP_JUMP
+            return []
+        if bucket <= last:
+            return []
+        if bucket - last > MAX_SWEEP_JUMP:
+            bucket = last + MAX_SWEEP_JUMP
     state["sweep_bk"] = bucket
     out = []
     for fam in sorted(FAMS.keys()):
