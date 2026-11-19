@@ -118,24 +118,36 @@ HIST_SCALE_RISK = (
 
 
 def load(path):
-    """Return (events, count of lines that were not JSON).
+    """Return (events, count of invalid lines).
 
-    A truncated export or a Splunk error page produces lines the parser
-    cannot read. Dropping them silently is how a run that read nothing comes
-    out looking like a clean one, so the caller gets the count and reports it.
+    A line is invalid if it cannot be parsed as JSON, or if the parsed value
+    is not an object carrying a nonempty string metric_name. An empty object,
+    a Splunk REST envelope like {"result":{"_raw":"..."}}, or a stray scalar
+    would otherwise be grouped under "?" and quietly ignored — a run that
+    read nothing but a Splunk error page would print a clean result. The
+    caller gets the count and reports it.
     """
     out = []
-    unparsed = 0
+    invalid = 0
     with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                out.append(json.loads(line))
+                rec = json.loads(line)
             except json.JSONDecodeError:
-                unparsed += 1
-    return out, unparsed
+                invalid += 1
+                continue
+            if not isinstance(rec, dict):
+                invalid += 1
+                continue
+            mn = rec.get("metric_name")
+            if not isinstance(mn, str) or not mn:
+                invalid += 1
+                continue
+            out.append(rec)
+    return out, invalid
 
 
 def as_number(value):
@@ -400,31 +412,30 @@ def _check_bytes_sum(metric, events, findings, checks):
 
 
 def _check_cpu_range(metric, events, findings, checks):
+    # A missing _value or a bool slipping through as 0/1 would otherwise pass
+    # the range check silently. as_number returns None on both, and the range
+    # check rejects None before testing the band.
     fails = []
+    vals = []
     for e in events:
-        try:
-            v = float(e.get("_value", 0))
-        except (TypeError, ValueError):
-            v = -1
-        if not (0 <= v <= 100):
+        v = as_number(e.get("_value"))
+        if v is None or not (0 <= v <= 100):
             fails.append(v)
+            continue
+        vals.append(v)
     if fails:
         findings.append(dict(
             lens="edge-case-hunter",
             location=f"{metric}: _value range",
             trigger_condition=(
-                f"CPU pct outside [0,100] in {len(fails)} events"
+                f"CPU pct missing, non-numeric, or outside [0,100] "
+                f"in {len(fails)} events"
             ),
             guard_snippet="Review pct calculation",
             potential_consequence="CPU alerts broken",
         ))
         checks.append(f"pct_in_0_100: FAIL {len(fails)} events")
     else:
-        vals = [
-            float(e.get("_value", 0))
-            for e in events
-            if e.get("_value") is not None
-        ]
         checks.append(
             f"pct_in_0_100: OK all {len(events)} events, "
             f"range {min(vals):.1f}-{max(vals):.1f}"
@@ -719,24 +730,25 @@ def main():
     ap.add_argument("--findings-out", default="/tmp/review_findings.json")
     args = ap.parse_args()
 
-    old, old_unparsed = load(args.old)
-    new, new_unparsed = load(args.new)
+    old, old_invalid = load(args.old)
+    new, new_invalid = load(args.new)
     print(
-        f"OLD events: {len(old)} ({old_unparsed} unparseable)  "
-        f"NEW events: {len(new)} ({new_unparsed} unparseable)"
+        f"OLD events: {len(old)} ({old_invalid} invalid)  "
+        f"NEW events: {len(new)} ({new_invalid} invalid)"
     )
 
     input_findings = []
-    for label, path, events, unparsed in (
-        ("OLD (fold-met)", args.old, old, old_unparsed),
-        ("NEW (fluentd-met)", args.new, new, new_unparsed),
+    for label, path, events, invalid in (
+        ("OLD (fold-met)", args.old, old, old_invalid),
+        ("NEW (fluentd-met)", args.new, new, new_invalid),
     ):
-        if unparsed:
+        if invalid:
             input_findings.append(dict(
                 lens="adversarial",
                 location=f"{label}: {path}",
                 trigger_condition=(
-                    f"{unparsed} lines could not be parsed as JSON"
+                    f"{invalid} lines were not JSON records "
+                    "with a nonempty metric_name"
                 ),
                 guard_snippet=UNPARSED_GUARD,
                 potential_consequence=UNPARSED_RISK,

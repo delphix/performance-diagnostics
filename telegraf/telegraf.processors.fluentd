@@ -272,19 +272,56 @@ def sweep(bucket):
     # boundary, and leaves it where it is. Anything further back is a clock
     # that stepped, from an NTP correction or a snapshot revert, and the clock
     # has to follow it. Left in the future it retires no key for as long as
-    # the step was. Retreating flushes nothing: the keys filling the buckets
-    # the recovered clock describes are swept the usual way once it advances.
+    # the step was.
+    #
+    # R5-1: the forward stale pass is gated by its own high-water mark. When
+    # one input trails another by two or more buckets, each late sample pulls
+    # sweep_bk back by MAX_SWEEP_JUMP and the next on-time sample pushes it
+    # forward again, so the clock oscillates across the boundary. Without
+    # this gate every on-time crossing would re-fire the stale pass on the
+    # lagging key's bucket, flushing its accumulators and BASELINES as empty
+    # fragments. The gate makes the stale pass run at most once per new
+    # high-water bucket however often sweep_bk crosses it.
+    #
+    # R5-2: on retreat, any key whose last-touched bucket now sits more than
+    # STALE_BUCKETS ahead of the retreated clock is flushed in this same
+    # pass. The forward stale pass can no longer reach it — a snapshot-revert
+    # or NTP step moves real time so far back that the key's bucket is out
+    # of the stale window from the new clock's point of view — and leaving
+    # it behind would hold its final event and its state until real time
+    # climbed back past it, defeating the retreat.
     last = state.get("sweep_bk", -1)
+    last_run = state.get("sweep_last_run_bk", -1)
+    retreated = False
     if last >= 0:
         if bucket < last - MAX_SWEEP_JUMP:
-            state["sweep_bk"] = last - MAX_SWEEP_JUMP
+            bucket = last - MAX_SWEEP_JUMP
+            retreated = True
+        elif bucket <= last:
             return []
-        if bucket <= last:
-            return []
-        if bucket - last > MAX_SWEEP_JUMP:
+        elif bucket - last > MAX_SWEEP_JUMP:
             bucket = last + MAX_SWEEP_JUMP
     state["sweep_bk"] = bucket
     out = []
+    if retreated:
+        for fam in sorted(FAMS.keys()):
+            keys = state.get(fam + "_keys", {})
+            stranded = []
+            for k in keys:
+                if keys[k] > bucket + STALE_BUCKETS:
+                    stranded.append(k)
+            if not stranded:
+                continue
+            for k in stranded:
+                out.extend(FAMS[fam](k, keys[k]))
+                keys.pop(k, None)
+                for prefix in BASELINES[fam]:
+                    state.pop(prefix + k, None)
+            state[fam + "_keys"] = keys
+        return out
+    if bucket <= last_run:
+        return []
+    state["sweep_last_run_bk"] = bucket
     for fam in sorted(FAMS.keys()):
         keys = state.get(fam + "_keys", {})
         stale = []
