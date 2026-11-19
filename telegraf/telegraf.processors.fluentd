@@ -259,7 +259,7 @@ def track(fam, key, bucket):
         return []
     return FAMS[fam](key, prev)
 
-def sweep(bucket):
+def sweep(bucket, name):
     # Flush every key that has gone quiet. Without this a bucket is only ever
     # flushed by the next sample carrying the same key, so a TCP endpoint that
     # closes, an interface that is removed or a disk direction that goes idle
@@ -290,6 +290,23 @@ def sweep(bucket):
     # of the stale window from the new clock's point of view — and leaving
     # it behind would hold its final event and its state until real time
     # climbed back past it, defeating the retreat.
+    #
+    # That high-water mark comes down with the clock. Left where it was it
+    # would hold the stale pass off for the whole length of a backward step,
+    # and every key going quiet in that window would keep its final event
+    # and leak its state until real time climbed back. STALE_BUCKETS of
+    # headroom is what keeps the gate above: at the two-bucket skew that
+    # oscillates the clock the mark comes out as min(C, C + 1) == C,
+    # unchanged, and only a real walk-back lowers it.
+    #
+    # One input several buckets behind the others arrives looking exactly
+    # like a backward step, and connstat makes that routine: each batch is
+    # printed under the previous header's timestamp (connstat-stats.sh).
+    # Taking it for a step would flush the keys the on-time inputs are still
+    # filling, since keys[key] holds the metric's own bucket while the clock
+    # is clamped to one bucket per metric. A step moves every input at once,
+    # so the retreat pass flushes nothing until a second measurement reports
+    # from the retreated clock. The clock follows the retreat either way.
     last = state.get("sweep_bk", -1)
     last_run = state.get("sweep_last_run_bk", -1)
     retreated = False
@@ -304,6 +321,18 @@ def sweep(bucket):
     state["sweep_bk"] = bucket
     out = []
     if retreated:
+        state["sweep_last_run_bk"] = min(last_run, bucket + STALE_BUCKETS)
+        opener = state.get("sweep_retreat_by", "")
+        if opener == "":
+            # First retreat of this phase: wait for a second measurement.
+            state["sweep_retreat_by"] = name
+            return out
+        if opener == name:
+            # Still the same lagging input walking the clock down.
+            return out
+        # A second measurement reports from the retreated clock: the step
+        # is real, and every later retreat in this phase flushes too.
+        state["sweep_retreat_by"] = "*"
         for fam in sorted(FAMS.keys()):
             keys = state.get(fam + "_keys", {})
             stranded = []
@@ -319,6 +348,8 @@ def sweep(bucket):
                     state.pop(prefix + k, None)
             state[fam + "_keys"] = keys
         return out
+    # The clock moved forward: whatever pulled it back was not a step.
+    state["sweep_retreat_by"] = ""
     if bucket <= last_run:
         return []
     state["sweep_last_run_bk"] = bucket
@@ -343,7 +374,7 @@ def apply(metric):
     ts     = metric.time
     bucket = ts // BUCKET_NS
     out    = [metric]
-    out.extend(sweep(bucket))
+    out.extend(sweep(bucket, name))
 
     # system.cpu.util.pct — matches Java LocalCpuCollector semantics:
     #   user   = (usage_user + usage_nice)   * CPU_MS_PER_PCT per 10s sample
